@@ -1,8 +1,54 @@
 # API v1
 
-`/status`와 `/healthz`를 제외한 `/v1` 요청은 `Authorization: Bearer <서버 토큰>` 헤더가 필요합니다.
+`/status`, `/healthz`와 아래 인증 API를 제외한 `/v1` 요청은 `Authorization: Bearer <인증 키>` 헤더가 필요합니다.
+인증 키는 기기 인증 키(`lofd_…`)나 관리자 로그인 키(`lofs_…`)입니다. `/v1/admin` API는 관리자 권한이 필요합니다.
 요청은 최대 8 MiB이고, 본문은 최대 100만 Unicode 글자입니다. 시간 값은 UTC Unix 초입니다.
 서재·문서·기기·요청 ID에는 영문, 숫자, `_`, `-`를 사용하며 최대 128자입니다.
+오류 응답은 `{"error":"코드","message":"안내 문구"}` 형식입니다. 요청 값이 규칙에 맞지 않으면 `422 invalid_request`입니다.
+
+## 인증과 기기 연결
+
+| 요청 | 인증 | 설명 |
+| --- | --- | --- |
+| `POST /v1/setup` | 없음 | `{"code":"ABCD-EFGH","password":"…"}`로 최초 관리자 설정. 로그인 키 반환 |
+| `POST /v1/auth/login` | 없음 | `{"password":"…"}`로 관리자 로그인. 12시간 유효한 로그인 키 반환 |
+| `POST /v1/auth/logout` | 로그인 키 | 현재 로그인 종료 |
+| `POST /v1/pair` | 없음 | `{"code":"ABCD-EFGH","name":"노트북","platform":"windows"}`로 기기 등록 |
+| `GET /v1/me` | 모든 키 | 현재 키의 종류·권한·기기 ID와 서버 정보 |
+
+최초 설정 코드는 관리자가 없을 때 서버 시작 로그에 표시됩니다. 설정 후에는 다시 쓸 수 없습니다.
+비밀번호는 8~256자입니다. 코드·비밀번호를 10분 동안 10번 틀리면 `429 too_many_attempts`를 반환합니다.
+
+`POST /v1/pair`의 응답:
+
+```json
+{
+  "device": {"id":"…","name":"노트북","role":"device","platform":"windows","created_at":1790000000.0,"last_seen_at":1790000000.0},
+  "token": "lofd_…",
+  "server": {"id":"…","name":"NAS","version":"0.1.0"}
+}
+```
+
+`token`은 이 응답에서 한 번만 받으므로 기기에 안전하게 보관합니다. 동기화 요청의 `device_id`에는 응답의 기기 ID를 사용할 수 있습니다.
+코드가 없으면 `404 pairing_code_invalid`, 이미 썼으면 `410 pairing_code_used`, 만료됐으면 `410 pairing_code_expired`입니다.
+
+연결 정보는 `lof-library://connect?server=<URL 인코딩한 서버 주소>&code=<연결 코드>` 형식입니다. QR에도 같은 문자열을 넣습니다.
+
+## 관리
+
+| 요청 | 설명 |
+| --- | --- |
+| `GET /v1/admin/server` | 서버 ID·이름·버전, 가동 시간, 저장 공간, 서재·문서·기기 수, 실시간 연결 수 |
+| `PUT /v1/admin/password` | `{"current_password":"…","new_password":"…"}`. 모든 로그인을 끝내고 새 로그인 키 반환 |
+| `GET /v1/admin/devices` | 연결 기기 목록과 실시간 연결 여부(`connected`), 마지막 접속 시각 |
+| `PATCH /v1/admin/devices/{기기}` | `{"name":"새 이름"}` |
+| `DELETE /v1/admin/devices/{기기}` | 연결 해제. 해당 기기의 키와 실시간 수신이 즉시 끊깁니다 |
+| `POST /v1/admin/pairing-codes` | `{"name":"노트북","role":"device","server_url":"http://192.168.0.2:8787"}`로 연결 코드 발급 |
+| `GET /v1/admin/pairing-codes` | 사용 전이고 만료되지 않은 코드 목록(코드 값은 제외) |
+| `DELETE /v1/admin/pairing-codes/{코드 ID}` | 사용 전 코드 취소 |
+
+연결 코드 발급 응답에는 `code`, `expires_at`, `server_url`, `connection`(연결 정보)이 들어 있습니다. 코드 값은 이때만 받을 수 있습니다.
+`role`이 `admin`이면 등록한 기기도 관리 API를 사용할 수 있습니다. `server_url`을 생략하면 요청한 주소를 사용합니다.
 
 ## 서재 만들기
 
@@ -126,7 +172,9 @@ GET 응답의 `ETag`를 다음 GET의 `If-None-Match`로 보내면 변경이 없
 `GET /status`는 인증 없이 외부 연결을 확인하기 위한 API입니다.
 
 ```json
-{"service":"Lof Library Daemon","version":"0.1.0","status":"ok","database":"ok","time":"2026-10-18T08:00:00Z","uptime_seconds":120}
+{"service":"Lof Library Daemon","version":"0.1.0","server_id":"…","name":"NAS","status":"ok","database":"ok","setup_required":false,"time":"2026-10-18T08:00:00Z","uptime_seconds":120}
 ```
+
+`setup_required`가 참이면 아직 관리자 비밀번호를 설정하지 않은 서버입니다.
 
 `GET /healthz`는 정상일 때 `{"status":"ok"}`를 반환합니다. 두 API는 DB 장애 시 HTTP 503을 반환합니다.

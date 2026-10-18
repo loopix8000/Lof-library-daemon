@@ -1,0 +1,25 @@
+[package]
+name = "lof-library-desktop"
+description = "Lof Library 설치형 서버 관리 앱"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+default-run = "lof-library-desktop"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+lof-library-core.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-single-instance = "2"
+tauri-plugin-autostart = "2"
+tauri-plugin-opener = "2"
+qrcode = { version = "0.14", default-features = false, features = ["svg"] }
+if-addrs = "0.15"

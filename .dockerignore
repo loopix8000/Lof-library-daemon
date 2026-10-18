@@ -1,8 +1,9 @@
 .git
-.venv
-__pycache__
-**/__pycache__
-*.egg-info
+.github
 .env
 data
-tests
+target
+**/target
+desktop/node_modules
+desktop/ui
+desktop/src-tauri/gen

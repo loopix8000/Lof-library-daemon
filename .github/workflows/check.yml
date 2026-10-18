@@ -1,4 +1,4 @@
-name: 데몬 검증
+name: 서버 검증
 
 on: [push, pull_request]
 
@@ -6,24 +6,26 @@ permissions:
   contents: read
 
 jobs:
-  check:
+  server:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        python: ['3.11', '3.12']
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          python-version: ${{ matrix.python }}
-          cache: pip
-          cache-dependency-path: requirements*.lock
-      - name: 의존성 설치
-        run: |
-          python -m pip install -r requirements-dev.lock
-          python -m pip install --no-deps -e .
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: 정적 검사
+        run: cargo clippy --locked -p lof-library-core -p lof-library-server --all-targets -- -D warnings
       - name: API와 이력 규칙 검증
-        run: python -m unittest discover -s tests -v
+        run: cargo test --locked -p lof-library-core -p lof-library-server
       - name: Docker 이미지 빌드
-        if: matrix.python == '3.12'
         run: docker build -t lof-library-daemon:check .
+
+  desktop:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: 설치형 앱 컴파일 확인
+        run: cargo check --locked -p lof-library-desktop

@@ -1,22 +1,27 @@
-FROM python:3.12-slim
+FROM rust:1-slim-bookworm AS build
 
-ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1 \
-    LOF_DATA_DIR=/data
+WORKDIR /src
+COPY Cargo.toml Cargo.lock ./
+COPY crates ./crates
+COPY desktop/src-tauri ./desktop/src-tauri
+RUN cargo build --release --locked -p lof-library-server \
+    && mkdir -p /out/data \
+    && cp target/release/lof-library-server /out/
 
-WORKDIR /app
-COPY pyproject.toml ./
-COPY requirements.lock ./
-COPY lof_daemon ./lof_daemon
-RUN pip install --no-cache-dir -r requirements.lock \
-    && pip install --no-cache-dir --no-deps . \
-    && groupadd --gid 10001 lof \
-    && useradd --uid 10001 --gid lof --no-create-home lof \
-    && mkdir /data && chown lof:lof /data
+FROM debian:bookworm-slim
+
+ENV LOF_DATA_DIR=/data \
+    LOF_HOST=0.0.0.0 \
+    LOF_PORT=8787
+
+RUN groupadd --gid 10001 lof \
+    && useradd --uid 10001 --gid lof --no-create-home lof
+COPY --from=build /out/lof-library-server /usr/local/bin/lof-library-server
+COPY --from=build --chown=lof:lof /out/data /data
 
 USER lof
 VOLUME ["/data"]
 EXPOSE 8787
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s \
-    CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8787/healthz', timeout=3)"
-CMD ["python", "-m", "lof_daemon"]
+    CMD ["lof-library-server", "healthcheck"]
+ENTRYPOINT ["lof-library-server"]

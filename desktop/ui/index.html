@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Lof Library 서버</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <h1>Lof Library</h1>
+      <span id="status-pill" class="pill">확인 중</span>
+    </div>
+    <div class="actions">
+      <button id="start" type="button">시작</button>
+      <button id="restart" type="button" class="secondary">다시 시작</button>
+      <button id="stop" type="button" class="secondary">중지</button>
+    </div>
+  </header>
+
+  <main>
+    <p id="error" class="banner error" hidden></p>
+
+    <section class="card">
+      <h2>서버 상태</h2>
+      <dl class="facts">
+        <div><dt>서버 이름</dt><dd id="fact-name">-</dd></div>
+        <div><dt>버전</dt><dd id="fact-version">-</dd></div>
+        <div><dt>가동 시간</dt><dd id="fact-uptime">-</dd></div>
+        <div><dt>저장 공간</dt><dd id="fact-storage">-</dd></div>
+        <div><dt>서재 · 문서</dt><dd id="fact-counts">-</dd></div>
+        <div><dt>실시간 연결</dt><dd id="fact-online">-</dd></div>
+      </dl>
+      <h3>접속 주소</h3>
+      <ul id="addresses" class="addresses"></ul>
+      <p class="hint">다른 기기에서는 같은 네트워크의 주소를 사용합니다. 처음 실행할 때 Windows 방화벽에서 접근을 허용해 주세요.</p>
+    </section>
+
+    <section id="setup" class="card" hidden>
+      <h2>관리자 비밀번호 설정</h2>
+      <p class="hint">다른 PC나 휴대폰 브라우저에서 관리 화면에 로그인할 때 사용합니다.</p>
+      <form id="setup-form" class="stack">
+        <label>비밀번호<input id="setup-password" type="password" minlength="8" maxlength="256" autocomplete="new-password" required></label>
+        <label>비밀번호 확인<input id="setup-confirm" type="password" minlength="8" maxlength="256" autocomplete="new-password" required></label>
+        <button type="submit">설정</button>
+      </form>
+    </section>
+
+    <section class="card">
+      <h2>기기 추가</h2>
+      <p class="hint">연결 코드는 10분 동안 한 번만 사용할 수 있습니다. Lof Writer의 서버 연결 화면에 연결 정보를 붙여넣거나 QR을 읽어 주세요.</p>
+      <form id="pairing-form" class="grid">
+        <label>기기 이름<input id="pairing-name" maxlength="100" placeholder="예: 노트북"></label>
+        <label>권한
+          <select id="pairing-role">
+            <option value="device">일반 기기</option>
+            <option value="admin">관리자 기기</option>
+          </select>
+        </label>
+        <label class="wide">접속 주소<select id="pairing-url"></select></label>
+        <button type="submit" class="wide">연결 코드 발급</button>
+      </form>
+      <div id="pairing-result" class="pairing" hidden>
+        <div class="pairing-text">
+          <p class="code" id="pairing-code"></p>
+          <p class="hint" id="pairing-expiry"></p>
+          <label>연결 정보<textarea id="pairing-connection" rows="3" readonly></textarea></label>
+          <div class="row">
+            <button id="pairing-copy" type="button">연결 정보 복사</button>
+            <button id="pairing-cancel" type="button" class="secondary">코드 취소</button>
+          </div>
+        </div>
+        <div id="pairing-qr" class="qr" aria-label="연결 정보 QR"></div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>연결 기기</h2>
+      <p id="devices-empty" class="hint">아직 연결한 기기가 없습니다.</p>
+      <ul id="devices" class="devices"></ul>
+    </section>
+
+    <section class="card">
+      <h2>설정</h2>
+      <form id="settings-form" class="stack">
+        <label>포트<input id="settings-port" type="number" min="1024" max="65535" required></label>
+        <label class="check"><input id="settings-lan" type="checkbox"> 다른 기기에서 접속 허용</label>
+        <label class="check"><input id="settings-autostart" type="checkbox"> PC 시작 시 자동 실행</label>
+        <div class="row">
+          <button type="submit">저장</button>
+          <span class="hint">포트나 접속 허용을 바꾸면 서버를 다시 시작합니다.</span>
+        </div>
+      </form>
+      <div class="row spaced">
+        <button id="open-data" type="button" class="secondary">데이터 폴더 열기</button>
+        <button id="open-log" type="button" class="secondary">로그 열기</button>
+      </div>
+      <p class="hint" id="data-dir"></p>
+      <form id="password-form" class="stack" hidden>
+        <h3>관리자 비밀번호 변경</h3>
+        <label>새 비밀번호<input id="password-new" type="password" minlength="8" maxlength="256" autocomplete="new-password" required></label>
+        <button type="submit" class="secondary">변경</button>
+        <p class="hint">변경하면 브라우저의 관리 화면 로그인이 모두 끝납니다.</p>
+      </form>
+    </section>
+  </main>
+
+  <div id="toast" class="toast" role="status" hidden></div>
+  <script src="app.js"></script>
+</body>
+</html>

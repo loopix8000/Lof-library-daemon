@@ -1,7 +1,7 @@
 # Lof Library Daemon
 
-Lof Writer용 개인 중앙 동기화 서버입니다. FastAPI와 SQLite를 사용하며 Docker 컨테이너 하나로 실행합니다.
-현재 서버 API를 구현한 초기 버전입니다. Lof Writer 앱에서 서버를 연결하는 기능은 후속 작업입니다.
+Lof Writer용 개인 중앙 동기화 서버입니다. Rust(axum)와 SQLite로 만들었으며 Docker 컨테이너나 Windows 설치형 앱으로 실행합니다.
+두 배포 방식은 같은 서버 본체를 사용합니다. Lof Writer 앱에서 서버를 연결하는 기능은 후속 작업입니다.
 
 설치형·Docker형 배포와 기기 연결 개선 계획은 [구현 TODO](TODO.md)에 정리했습니다.
 
@@ -11,28 +11,62 @@ Lof Writer용 개인 중앙 동기화 서버입니다. FastAPI와 SQLite를 사�
 - **충돌 보존**: 같은 버전을 여러 기기가 수정하면 서버 원고와 충돌 사본을 각각 보존합니다. 동일한 요청을 재전송해도 중복 저장하지 않습니다.
 - **이력 관리**: 전송과 분리된 작업자가 서재별 공유 규칙으로 복구 시점을 만듭니다. 수동 기록·이전 원고 조회·복원·스마트 정리를 제공합니다.
 - **첨부 자료**: SHA-256으로 구분한 불변 파일을 저장합니다. 같은 자료를 다시 올려도 중복 이벤트를 만들지 않습니다.
+- **기기 연결**: 관리자가 발급한 일회용 연결 코드로 기기를 등록하고, 기기마다 별도 인증 키를 발급합니다.
 
 외부 DB나 Git 설치는 필요하지 않습니다. 서버 이력은 SQLite의 별도 스냅샷으로 저장하며, 앱의 로컬 Git 이관과는 별개입니다.
 
+| 폴더 | 내용 |
+| --- | --- |
+| `crates/lof-library-core` | 서버 본체(API, 저장소, 이력, 인증) |
+| `crates/lof-library-server` | Docker·명령줄용 실행 파일 |
+| `desktop` | Windows 설치형 트레이 앱(Tauri) |
+
+## 인증과 기기 연결
+
+- **서버 키**: 최초 기동 때 자동으로 만들어 DB에 보관합니다. 재기동·업데이트·백업 복구 후에도 기존 기기 연결이 유지됩니다.
+- **관리자**: 관리 화면 로그인용 비밀번호입니다. 처음 한 번은 서버 로그에 표시되는 **최초 설정 코드**를 입력해 설정합니다. 설치형 앱에서는 코드 없이 바로 설정합니다.
+- **연결 코드**: 관리자가 발급하며 10분 동안 한 번만 쓸 수 있습니다. 서버 주소와 함께 `lof-library://connect?server=…&code=…` 형식의 연결 정보·QR로 전달합니다.
+- **기기 인증 키**: 연결 코드로 등록할 때 기기마다 발급합니다. 관리자가 기기를 연결 해제하면 즉시 사용할 수 없습니다.
+- 잘못된 코드·비밀번호를 반복해서 입력하면 잠시 요청을 거부합니다.
+
+이전 버전의 `LOF_API_TOKEN`을 설정하면 일반 기기 권한으로만 계속 허용합니다. 모든 기기를 연결 코드로 다시 연결한 뒤 설정을 지웁니다.
+
 ## Docker로 실행
-
-1. `.env.example`을 `.env`로 복사합니다.
-2. 아래 명령으로 토큰을 만들고 `.env`의 `LOF_API_TOKEN`에 넣습니다.
-
-```powershell
-$env:PYTHONIOENCODING='utf-8'
-python -c "import secrets; print(secrets.token_urlsafe(32))"
-```
-
-3. 서버를 실행합니다.
 
 ```sh
 docker compose up -d --build
+docker compose logs daemon
 ```
 
-기본 포트는 `8787`입니다. 원고·자료·설정·이력은 `library-data` 영구 볼륨에 함께 보관합니다.
-설정한 토큰은 연결하는 모든 앱에서 사용합니다. 인터넷에 연결할 때는 HTTPS 역방향 프록시를 앞에 둡니다.
-프록시의 SSE 응답 버퍼링을 끄고 읽기 제한 시간을 15초보다 길게 설정합니다.
+로그의 `최초 설정 코드 XXXX-XXXX`를 관리 화면의 최초 설정에서 입력하고 관리자 비밀번호를 정합니다.
+코드를 잃어버렸거나 비밀번호를 잊었으면 다음 명령으로 새 코드를 발급합니다.
+
+```sh
+docker compose exec daemon lof-library-server reset-admin
+```
+
+기본 포트는 `8787`입니다. 원고·자료·설정·이력·인증 정보는 `library-data` 영구 볼륨에 함께 보관합니다.
+서버 이름과 포트는 `.env.example`을 `.env`로 복사해 바꿀 수 있습니다.
+인터넷에 연결할 때는 HTTPS 역방향 프록시를 앞에 둡니다. 프록시의 SSE 응답 버퍼링을 끄고 읽기 제한 시간을 15초보다 길게 설정합니다.
+
+## Windows 설치형 앱
+
+`desktop` 앱은 서버를 앱 안에서 실행하고 트레이에 상주합니다. Python 등 별도 런타임이 필요 없습니다.
+
+- 창을 닫아도 서버는 계속 실행되며, 트레이 메뉴의 **종료**로 끝냅니다. 두 번 실행하면 기존 창을 엽니다.
+- 관리 창에서 서버 시작·중지, 접속 주소 확인, 관리자 비밀번호 설정, 연결 코드·QR 발급, 연결 기기 이름 변경·해제를 합니다.
+- 포트, 다른 기기 접속 허용, PC 시작 시 자동 실행을 설정합니다. 자동 실행 때는 창 없이 트레이에서 시작합니다.
+- 데이터는 `%APPDATA%\local.lof.library\data`에 저장합니다. 업데이트·재설치해도 유지되며, 설치 제거 때 데이터 삭제 여부를 선택합니다.
+
+설치 파일 만들기(Node.js와 Rust 필요):
+
+```powershell
+cd desktop
+npm install
+npm run package
+```
+
+설치 파일은 `target\release\bundle\nsis`에 만들어집니다.
 
 ## 외부 연결 확인
 
@@ -43,27 +77,27 @@ curl http://서버주소:8787/status
 curl http://서버주소:8787/healthz
 ```
 
-`/status`는 서버 이름, 버전, UTC 시각, 가동 시간과 DB 상태를 반환합니다.
+`/status`는 서버 이름·ID·버전, 관리자 설정 필요 여부, UTC 시각, 가동 시간과 DB 상태를 반환합니다.
 정상이면 HTTP `200`과 `"status":"ok"`, DB를 사용할 수 없으면 HTTP `503`을 반환합니다.
-`/healthz`는 Docker 상태 확인에 사용하는 간단한 API입니다.
 외부 확인에는 실행 PC의 `localhost` 대신 NAS 주소나 공개 도메인을 사용하고 포트·프록시를 연결해야 합니다.
 
 ## 로컬 실행
 
-Python 3.11 이상이 필요합니다. PowerShell 기준입니다.
+Rust 1.89 이상이 필요합니다.
 
 ```powershell
-$env:PYTHONIOENCODING='utf-8'
-python -m venv .venv
-.venv\Scripts\python -m pip install -r requirements.lock
-.venv\Scripts\python -m pip install --no-deps -e .
-$env:LOF_API_TOKEN = .venv\Scripts\python -c "import secrets; print(secrets.token_urlsafe(32))"
-.venv\Scripts\python -m lof_daemon
+cargo run -p lof-library-server -- --port 8787 --data-dir data
 ```
 
-API 문서는 `http://localhost:8787/docs`에 있습니다. 문서 화면의 **Authorize**에 서버 토큰을 입력합니다.
-동기화·이력 API는 모두 `Authorization: Bearer <토큰>` 헤더가 필요합니다.
-로컬 데이터는 기본 `data/`에 저장하며 `LOF_DATA_DIR`로 변경할 수 있습니다.
+| 옵션 | 환경 변수 | 기본값 |
+| --- | --- | --- |
+| `--host` | `LOF_HOST` | `0.0.0.0` |
+| `--port` | `LOF_PORT` | `8787` |
+| `--data-dir` | `LOF_DATA_DIR` | `data` |
+| | `LOF_SERVER_NAME` | 컴퓨터 이름 |
+| | `LOF_API_TOKEN` | 없음(이전 방식 호환용) |
+
+로그 수준은 `RUST_LOG`로 바꿀 수 있습니다. API 요청 예제와 재연결 순서는 [API.md](API.md)를 참고합니다.
 
 ## 이력 규칙
 
@@ -79,6 +113,7 @@ API 문서는 `http://localhost:8787/docs`에 있습니다. 문서 화면의 **A
 
 - 시간과 변경 글자 수 조건을 **모두** 만족해야 자동 이력을 만듭니다. 전송은 이 조건을 기다리지 않습니다.
 - 처음 등록한 문서는 기준 이력을 하나 만듭니다. 이후 입력이 없거나 원래 본문으로 돌아오면 자동 이력이 생기지 않습니다.
+- 변경 글자 수는 앞뒤 공통 부분을 제외하고 비교합니다. 비교 구간이 2만 자를 넘으면 해당 구간 전체를 바뀐 글자로 계산합니다.
 - 수동 기록은 두 조건을 적용하지 않습니다. 직전 이력과 같으면 새 이력을 만들지 않고 수동 표시를 추가합니다.
 - 복원은 현재 원고를 먼저 보존하고, 선택한 내용을 새 문서 버전으로 저장합니다.
 - 스마트 정리는 UTC 기준 고정 구간을 사용하며 수동 저장·복원 기록을 합치지 않습니다. 구간의 최신 자동 이력을 남기고 나머지를 삭제합니다.
@@ -88,23 +123,19 @@ API 문서는 `http://localhost:8787/docs`에 있습니다. 문서 화면의 **A
 
 ## 개발·운영
 
-API 요청 예제와 재연결 순서는 [API.md](API.md)를 참고합니다.
-
 ```powershell
-$env:PYTHONIOENCODING='utf-8'
-.venv\Scripts\python -m pip install -r requirements-dev.lock
-.venv\Scripts\python -m unittest discover -s tests -v
+cargo test -p lof-library-core -p lof-library-server
 ```
 
 실행 중인 서버는 SQLite 온라인 백업으로 보관합니다. 기존 백업 파일은 덮어쓰지 않습니다.
 
 ```sh
-docker compose exec daemon python -m lof_daemon.backup /data/backup-20261018.sqlite
+docker compose exec daemon lof-library-server backup /data/backup-20261018.sqlite
 docker compose cp daemon:/data/backup-20261018.sqlite ./backup-20261018.sqlite
 ```
 
-복구할 때는 데몬을 멈추고 백업을 새 데이터 볼륨의 `library.sqlite`로 복사한 뒤 실행합니다.
+복구할 때는 서버를 멈추고 백업을 새 데이터 볼륨의 `library.sqlite`로 복사한 뒤 실행합니다.
 실행 중인 DB 파일 하나만 복사하면 WAL의 최근 변경을 빠뜨릴 수 있으므로 위 백업 명령을 사용합니다.
 
-현재는 개인 서버용 공통 토큰 인증과 단일 작업자 구성입니다. 데이터 폴더를 공유하는 여러 프로세스는 실행을 거부합니다.
+데이터 폴더를 공유하는 여러 프로세스는 실행을 거부합니다.
 첨부 자료·충돌 사본·변경 알림·재전송 영수증은 자동 삭제하지 않습니다. 이력 정리는 이력 스냅샷에만 적용하며, SQLite의 빈 공간은 이후 저장에 재사용합니다.
