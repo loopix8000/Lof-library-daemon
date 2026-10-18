@@ -251,10 +251,15 @@ h2 { margin: 0 0 6px; font-size: 14px; font-weight: 600; color: var(--strong); }
 .list .actions { display: flex; gap: 6px; flex: none; }
 .mono { font-family: "Cascadia Mono", Consolas, monospace; font-size: 13px; }
 .tag {
+  /* 글꼴의 위쪽 여백 때문에 글자가 위로 뜨지 않도록 높이를 고정하고 가운데 정렬한다. */
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   min-width: 84px;
-  padding: 1px 7px;
-  text-align: center;
-  border-radius: 10px;
+  height: 22px;
+  padding: 0 8px;
+  line-height: 1;
+  border-radius: 11px;
   background: var(--soft);
   color: var(--muted);
   font-size: 11px;
