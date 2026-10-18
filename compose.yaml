@@ -1,0 +1,20 @@
+services:
+  daemon:
+    build: .
+    image: lof-library-daemon:local
+    restart: unless-stopped
+    environment:
+      LOF_API_TOKEN: ${LOF_API_TOKEN:?먼저 .env에 LOF_API_TOKEN을 설정해 주세요.}
+      LOF_DATA_DIR: /data
+    ports:
+      - "${LOF_PORT:-8787}:8787"
+    volumes:
+      - library-data:/data
+    stop_grace_period: 30s
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+volumes:
+  library-data:
