@@ -416,6 +416,8 @@ h2 { margin: 0 0 6px; font-size: 14px; font-weight: 600; color: var(--strong); }
   box-shadow: 0 8px 24px #0000001f;
 }
 .toast.error { border-left-color: var(--danger); }
+#realtime-code { width: 100%; resize: vertical; overflow-wrap: anywhere; }
+#realtime-qr { background: white; margin-top: 16px; }
 
 @media (max-width: 720px) {
   .app { grid-template-columns: 176px minmax(0, 1fr); }
@@ -426,3 +428,21 @@ h2 { margin: 0 0 6px; font-size: 14px; font-weight: 600; color: var(--strong); }
   .pairing { flex-direction: column; align-items: stretch; }
   .qr { align-self: center; }
 }
+
+/* Iroh 서재와 기기 연결 */
+textarea { display:block; width:100%; min-width:0; padding:10px; border:1px solid var(--input-border); border-radius:7px; background:var(--surface); color:var(--text); font:inherit; resize:vertical; overflow-wrap:anywhere; }
+.peer-form { display:grid; gap:16px; max-width:560px; }
+.peer-form label, .endpoint-label { display:grid; gap:8px; }
+.peer-form button { justify-self:start; }
+.endpoint-label { margin:16px 0 8px; color:var(--muted); font-size:12px; }
+.endpoint-label input { font-family:Consolas,monospace; font-size:12px; }
+.connection-choices { display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-top:16px; }
+.connection-choices button { display:grid; gap:8px; white-space:normal; text-align:left; padding:20px; }
+.connection-choices span { font-size:12px; color:var(--muted); }
+.invite-result { display:grid; grid-template-columns:240px minmax(0,1fr); gap:24px; margin-top:24px; }
+.invite-result img { background:white; max-width:100%; height:auto; }
+.invite-result .actions { margin-top:12px; flex-wrap:wrap; }
+.library-card { align-items:flex-start !important; flex-wrap:wrap; }
+.library-card .actions { flex-wrap:wrap; }
+.error-text { color:var(--danger); font-size:12px; }
+@media(max-width:780px){.invite-result,.connection-choices {grid-template-columns:minmax(0,1fr);} .list .actions {flex-wrap:wrap;}}

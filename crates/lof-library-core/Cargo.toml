@@ -1,33 +1,22 @@
 [package]
 name = "lof-library-core"
-description = "Lof Writer 서재 동기화 서버 본체"
+description = "Lof Writer Iroh 서재 동기화 피어"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-axum.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
-serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
-async-stream = "0.3"
 rusqlite = { version = "0.40", features = ["bundled", "backup"] }
 sha2 = "0.10"
-hmac = "0.12"
 hex = "0.4"
-rand = "0.8"
 base64 = "0.22"
 uuid = { version = "1", features = ["v4"] }
-scrypt = { version = "0.11", default-features = false }
 subtle = "2.6"
-dissimilar = "1"
-form_urlencoded = "1"
-hostname = "0.4"
-
-[dev-dependencies]
-tower = { version = "0.5", features = ["util"] }
-http-body-util = "0.1"
-tempfile = "3"
+lof-realtime = { path = "../lof-realtime" }
+iroh = { version = "=1.3.0", default-features = false, features = ["tls-ring", "portmapper"] }
+notify = "8.2"

@@ -1,12 +1,5 @@
 <!doctype html>
-<html lang="ko">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Lof Library 서버</title>
-  <link rel="stylesheet" href="style.css">
-</head>
-<body>
+<html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Lof Library</title><link rel="stylesheet" href="style.css"></head><body>
   <svg width="0" height="0" class="sprite" aria-hidden="true">
     <symbol id="i-home" viewBox="0 0 24 24"><path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V21h14V9.5"/></symbol>
     <symbol id="i-devices" viewBox="0 0 24 24"><rect x="2" y="4" width="14" height="10" rx="1.5"/><path d="M6 18h6"/><rect x="17" y="8" width="5" height="12" rx="1.5"/></symbol>
@@ -21,277 +14,55 @@
 
   <div class="app">
     <aside class="sidebar">
-      <div class="brand">
-        <strong>Lof Library</strong>
-        <span>서재 동기화 서버</span>
-      </div>
-
+      <div class="brand"><strong>Lof Library</strong><span>실시간 동기화</span></div>
       <div class="server-card">
-        <div class="server-state">
-          <span id="state-dot" class="dot"></span>
-          <span id="state-label">확인 중</span>
-        </div>
-        <p id="state-detail" class="server-detail"></p>
-        <div class="server-actions">
-          <button id="toggle-server" type="button" class="small">시작</button>
-          <button id="restart" type="button" class="small ghost" hidden>다시 시작</button>
-        </div>
+        <div class="server-state"><span id="state-dot" class="dot"></span><span id="state-label">확인 중</span></div>
+        <div class="server-actions"><button id="toggle-server" class="small" type="button">시작</button><button id="restart" class="small ghost" type="button" hidden>다시 시작</button></div>
       </div>
-
       <nav class="nav" aria-label="관리 메뉴">
         <button type="button" data-page="overview" aria-pressed="true"><svg><use href="#i-home"/></svg>개요</button>
         <button type="button" data-page="libraries" aria-pressed="false"><svg><use href="#i-library"/></svg>서재</button>
-        <button type="button" data-page="devices" aria-pressed="false"><svg><use href="#i-devices"/></svg>연결 기기<span id="device-count" class="count" hidden></span></button>
+        <button type="button" data-page="devices" aria-pressed="false"><svg><use href="#i-devices"/></svg>연결된 기기</button>
+        <button type="button" data-page="invite" aria-pressed="false"><svg><use href="#i-plus"/></svg>연결 코드 만들기</button>
+        <button type="button" data-page="connect" aria-pressed="false"><svg><use href="#i-devices"/></svg>다른 기기 연결</button>
         <button type="button" data-page="settings" aria-pressed="false"><svg><use href="#i-settings"/></svg>설정</button>
       </nav>
-
       <p id="version" class="version"></p>
     </aside>
-
     <main class="content">
+      <div id="error-callout" class="callout danger" role="alert" hidden><svg><use href="#i-alert"/></svg><div><strong>동기화를 시작하지 못했습니다</strong><p id="error-message"></p><button type="button" class="small" data-action="open-log">로그 열기</button></div></div>
       <section id="page-overview" class="page">
-        <header class="page-header">
-          <div>
-            <h1>개요</h1>
-            <p class="description">Lof Writer가 이 PC의 서버로 원고를 동기화합니다.</p>
-          </div>
-          <button type="button" class="primary" data-action="add-device"><svg><use href="#i-plus"/></svg>기기 추가</button>
-        </header>
-
-        <div id="error-callout" class="callout danger" hidden>
-          <svg><use href="#i-alert"/></svg>
-          <div>
-            <strong>서버를 실행하지 못했습니다</strong>
-            <p id="error-message"></p>
-            <button type="button" class="small" data-action="open-log">로그 열기</button>
-          </div>
-        </div>
-
-        <section class="section">
-          <h2>접속 주소</h2>
-          <p class="description">Lof Writer에서 서버를 연결할 때 사용합니다. 다른 기기는 같은 네트워크의 주소로 접속합니다.</p>
-          <ul id="addresses" class="list"></ul>
-        </section>
-
-        <section class="section">
-          <h2>현황</h2>
-          <dl class="stats">
-            <div><dt>서재</dt><dd id="stat-libraries">-</dd></div>
-            <div><dt>문서</dt><dd id="stat-documents">-</dd></div>
-            <div><dt>실시간 연결</dt><dd id="stat-online">-</dd></div>
-            <div><dt>저장 공간</dt><dd id="stat-storage">-</dd></div>
-          </dl>
-        </section>
+        <header class="page-header"><div><h1>실시간 동기화</h1></div><button type="button" class="primary" data-go="connect">다른 기기 연결</button></header>
+        <section class="section"><h2>동기화 현황</h2><dl class="stats"><div><dt>서재</dt><dd id="stat-libraries">-</dd></div><div><dt>원본 파일</dt><dd id="stat-files">-</dd></div><div><dt>연결된 기기</dt><dd id="stat-online">-</dd></div><div><dt>원본 용량</dt><dd id="stat-storage">-</dd></div></dl></section>
+        <section class="section"><h2>기기 연결</h2><div class="connection-choices"><button type="button" data-go="invite"><strong>이 서재에 기기 초대</strong><span>QR·일회용 코드를 만들어 다른 기기에 전달합니다.</span></button><button type="button" data-go="connect"><strong>다른 기기에 연결</strong><span>Writer 또는 다른 Lof Library의 코드를 입력합니다.</span></button></div></section>
       </section>
-
       <section id="page-libraries" class="page" hidden>
-        <header class="page-header">
-          <div>
-            <h1>서재</h1>
-            <p class="description">서버에 보관한 서재와 이력 규칙을 관리합니다. 작품과 원고는 연결한 Lof Writer에서 편집합니다.</p>
-          </div>
-          <button id="library-add" type="button" class="primary"><svg><use href="#i-plus"/></svg>서재 만들기</button>
-        </header>
-        <p id="libraries-stopped" class="hint" hidden>서재를 관리하려면 서버를 시작해 주세요.</p>
-        <ul id="libraries" class="list library-list"></ul>
-        <div id="libraries-empty" class="empty" hidden>
-          <strong>아직 서재가 없습니다</strong>
-          <p>서재 만들기로 추가하거나, Lof Writer에서 서버를 연결하며 만들 수 있습니다.</p>
-        </div>
+        <header class="page-header"><div><h1>서재</h1></div><button type="button" class="primary" data-action="create-library">서재 만들기</button></header>
+        <ul id="libraries" class="list library-list"></ul><div id="libraries-empty" class="empty"><strong>아직 서재가 없습니다</strong><p>서재를 만든 뒤 다른 기기를 연결하세요.</p></div>
       </section>
-
       <section id="page-devices" class="page" hidden>
-        <header class="page-header">
-          <div>
-            <h1>연결 기기</h1>
-            <p class="description">연결 코드로 등록한 기기입니다. 연결을 해제하면 해당 기기는 즉시 동기화할 수 없습니다.</p>
-          </div>
-          <button type="button" class="primary" data-action="add-device"><svg><use href="#i-plus"/></svg>기기 추가</button>
-        </header>
-        <ul id="devices" class="list"></ul>
-        <div id="devices-empty" class="empty" hidden>
-          <strong>아직 연결한 기기가 없습니다</strong>
-          <p>기기 추가에서 연결 코드를 발급한 뒤 Lof Writer의 서버 연결 화면에 입력해 주세요.</p>
-        </div>
+        <header class="page-header"><div><h1>연결된 기기</h1></div><button type="button" data-go="connect" class="primary">기기 연결</button></header>
+        <ul id="devices" class="list"></ul><div id="devices-empty" class="empty"><strong>연결된 기기가 없습니다</strong><p>연결 코드를 만들거나 다른 기기의 코드로 연결하세요.</p></div>
       </section>
-
+      <section id="page-invite" class="page" hidden>
+        <header class="page-header"><div><h1>연결 코드 만들기</h1></div></header>
+        <form id="invite-form" class="peer-form"><label>공유할 서재<select name="id" id="invite-library" required></select></label><button type="button" class="small" data-action="create-library">새 서재 만들기</button><button type="submit" class="primary">QR·연결 코드 만들기</button></form>
+        <div id="invite-result" class="invite-result" hidden><img id="invite-qr" width="240" height="240" alt="기기 연결 QR 코드"><div><p>다른 기기의 ‘다른 기기 연결’ 화면에 코드를 입력하세요.</p><p id="invite-expiry" class="hint"></p><textarea id="invite-code" readonly rows="4" aria-label="기기 연결 코드"></textarea><div class="actions"><button type="button" id="invite-copy">코드 복사</button><button type="button" id="invite-cancel">코드 취소</button></div></div></div><p id="invite-notice" role="status"></p>
+      </section>
+      <section id="page-connect" class="page" hidden>
+        <header class="page-header"><div><h1>다른 기기 연결</h1><p class="description">Writer 또는 다른 Lof Library에서 만든 코드를 입력합니다.</p></div></header>
+        <form id="connect-form" class="peer-form"><label>연결할 내 서재<select name="id" id="connect-library" required></select></label><button type="button" class="small" data-action="create-library">새 서재 만들기</button><label>상대 기기의 연결 코드<textarea name="code" id="connect-code" rows="5" required maxlength="16384" placeholder="연결 코드를 붙여넣으세요"></textarea></label><p class="hint">선택한 서재와 상대 서재의 파일을 서로 동기화합니다.</p><button type="submit" class="primary">기기 연결</button><p id="connect-notice" role="status"></p></form>
+      </section>
       <section id="page-settings" class="page" hidden>
-        <header class="page-header">
-          <div>
-            <h1>설정</h1>
-            <p class="description">네트워크와 실행 방식을 바꿉니다.</p>
-          </div>
-        </header>
-
-        <section class="section">
-          <h2>네트워크</h2>
-          <div class="rows">
-            <div class="row">
-              <span><b>포트</b><small>바꾸면 서버를 다시 시작합니다. 연결된 기기의 서버 주소도 함께 바꿔야 합니다.</small></span>
-              <form id="port-form" class="port-form">
-                <input id="settings-port" type="number" min="1024" max="65535" required>
-                <button id="port-apply" type="submit" class="small" disabled>적용</button>
-              </form>
-            </div>
-            <label class="row toggle">
-              <span><b>다른 기기에서 접속 허용</b><small>끄면 이 PC의 Lof Writer만 연결할 수 있습니다.</small></span>
-              <input id="settings-lan" type="checkbox">
-            </label>
-          </div>
-        </section>
-
-        <section class="section">
-          <h2>실행</h2>
-          <div class="rows">
-            <label class="row toggle">
-              <span><b>PC 시작 시 자동 실행</b><small>창 없이 알림 영역에서 서버를 시작합니다.</small></span>
-              <input id="settings-autostart" type="checkbox">
-            </label>
-          </div>
-        </section>
-
-        <section class="section">
-          <h2>업데이트</h2>
-          <div class="rows">
-            <div class="row">
-              <span><b id="update-version">버전 확인 중</b><small id="update-message" role="status">새 버전을 자동으로 확인합니다.</small></span>
-              <div class="actions">
-                <button id="update-check" type="button" class="small">업데이트 확인</button>
-                <button id="update-install" type="button" class="small primary" hidden>설치하고 다시 시작</button>
-              </div>
-            </div>
-          </div>
-        </section>
-
-        <section class="section">
-          <h2>데이터</h2>
-          <div class="rows">
-            <div class="row">
-              <span><b>데이터 폴더</b><small id="data-dir" class="path"></small></span>
-              <button type="button" class="small" data-action="open-data">열기</button>
-            </div>
-            <div class="row">
-              <span><b>서버 로그</b><small>문제가 생겼을 때 원인을 확인합니다.</small></span>
-              <button type="button" class="small" data-action="open-log">열기</button>
-            </div>
-          </div>
-        </section>
+        <header class="page-header"><div><h1>설정</h1></div></header>
+        <section class="section"><h2>실행</h2><div class="rows"><label class="row toggle"><span><b>PC 시작 시 자동 실행</b><small>알림 영역에서 동기화를 시작합니다.</small></span><input id="settings-autostart" type="checkbox"></label></div></section>
+        <section class="section"><h2>업데이트</h2><div class="rows"><div class="row"><span><b id="update-version">버전 확인 중</b><small id="update-message" role="status"></small></span><div class="actions"><button id="update-check" type="button" class="small">업데이트 확인</button><button id="update-install" type="button" class="small primary" hidden>설치하고 다시 시작</button></div></div></div></section>
+        <section class="section"><h2>데이터</h2><div class="rows"><div class="row"><span><b>데이터 폴더</b><small id="data-dir" class="path"></small></span><button type="button" class="small" data-action="open-data">열기</button></div><div class="row"><span><b>동기화 로그</b><small>연결 오류와 실행 기록을 확인합니다.</small></span><button type="button" class="small" data-action="open-log">열기</button></div></div></section>
       </section>
     </main>
   </div>
-
-  <div id="pairing-modal" class="backdrop" hidden>
-    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="pairing-title">
-      <header class="modal-header">
-        <h2 id="pairing-title">기기 추가</h2>
-        <button type="button" class="icon" data-action="close-pairing" aria-label="닫기"><svg><use href="#i-close"/></svg></button>
-      </header>
-
-      <p id="pairing-loading" class="hint pairing-loading">연결 코드를 발급하고 있습니다…</p>
-
-      <div id="pairing-result" hidden>
-        <div class="pairing">
-          <div id="pairing-qr" class="qr" aria-label="연결 정보 QR"></div>
-          <div class="pairing-text">
-            <p class="hint">Lof Writer의 설정 → 외부 저장소에서 ‘Lof Library 서버’를 고른 뒤 연결 정보를 붙여넣어 주세요.</p>
-            <p id="pairing-code" class="code"></p>
-            <p id="pairing-expiry" class="expiry"></p>
-            <button id="pairing-copy" type="button" class="small"><svg><use href="#i-copy"/></svg>연결 정보 복사</button>
-          </div>
-        </div>
-        <label class="pairing-address">접속 주소<select id="pairing-url"></select></label>
-        <p id="pairing-local-hint" class="hint" hidden>다른 기기에서 접속하려면 설정에서 ‘다른 기기에서 접속 허용’을 켜 주세요.</p>
-        <footer class="modal-footer">
-          <button type="button" class="danger-outline" data-action="cancel-pairing">코드 취소</button>
-          <button type="button" class="primary" data-action="close-pairing">닫기</button>
-        </footer>
-      </div>
-
-      <div id="pairing-done" class="done" hidden>
-        <span class="done-icon"><svg><use href="#i-check"/></svg></span>
-        <strong id="pairing-done-title"></strong>
-        <p>이제 이 기기에서 원고를 동기화할 수 있습니다.</p>
-        <footer class="modal-footer">
-          <button type="button" class="primary" data-action="close-pairing">확인</button>
-        </footer>
-      </div>
-    </div>
-  </div>
-
-  <div id="library-name-modal" class="backdrop" hidden>
-    <form id="library-name-form" class="modal narrow" role="dialog" aria-modal="true" aria-labelledby="library-name-title">
-      <header class="modal-header"><h2 id="library-name-title">서재 만들기</h2></header>
-      <label>서재 이름<input id="library-name" required maxlength="200" autocomplete="off"></label>
-      <p class="hint">이 서재는 연결한 Lof Writer에서 선택할 수 있습니다.</p>
-      <footer class="modal-footer">
-        <button type="button" data-library-close="library-name-modal">취소</button>
-        <button id="library-name-save" type="submit" class="primary">만들기</button>
-      </footer>
-    </form>
-  </div>
-
-  <div id="library-policy-modal" class="backdrop" hidden>
-    <form id="library-policy-form" class="modal policy-modal" role="dialog" aria-modal="true" aria-labelledby="library-policy-title">
-      <header class="modal-header"><h2 id="library-policy-title">이력 설정</h2></header>
-      <p id="library-policy-name" class="hint"></p>
-      <section class="policy-section">
-        <h3>자동 기록</h3>
-        <p class="hint">이전 기록 이후 아래 두 조건을 모두 만족하면 이력을 만듭니다. 원고 동기화는 이 조건을 기다리지 않습니다.</p>
-        <div class="policy-fields">
-          <label>지난 시간(분)<input id="history-minutes" type="number" min="1" max="10080" required></label>
-          <label>추가·삭제된 글자 수<input id="history-chars" type="number" min="1" max="1000000" required></label>
-        </div>
-      </section>
-      <section class="policy-section">
-        <h3>보관 기간</h3>
-        <label class="policy-check"><input id="history-retention-enabled" type="checkbox">보관 기간이 지난 이력 자동 삭제</label>
-        <label>보관 일수<input id="history-days" type="number" min="1" max="36500" required disabled></label>
-        <label class="policy-check"><input id="history-expire-protected" type="checkbox" disabled>수동 기록과 복원 기록에도 보관 기간 적용</label>
-        <p class="hint">자동 삭제를 끄면 기간 제한 없이 보관합니다. 문서별 최신 이력은 유지합니다.</p>
-      </section>
-      <section class="policy-section">
-        <h3>스마트 정리</h3>
-        <label class="policy-check"><input id="history-smart" type="checkbox">오래된 자동 이력을 간격별로 하나씩 보관</label>
-        <div class="policy-fields">
-          <label>최근 전체 보관 시간(분)<input id="history-recent" type="number" min="1" max="525600" required disabled></label>
-          <label>오래된 이력 정리 간격(분)<input id="history-bucket" type="number" min="1" max="525600" required disabled></label>
-        </div>
-        <p class="hint">최근 이력은 모두 보관하고, 그보다 오래된 자동 이력은 각 구간의 마지막 기록만 남깁니다. 수동·복원 기록은 스마트 정리에서 보호합니다.</p>
-      </section>
-      <p class="hint">이 서버 서재에 공통으로 적용합니다. 정리된 과거 이력은 되돌릴 수 없습니다.</p>
-      <footer class="modal-footer">
-        <button type="button" data-library-close="library-policy-modal">취소</button>
-        <button id="library-policy-save" type="submit" class="primary">저장</button>
-      </footer>
-    </form>
-  </div>
-
-  <div id="library-delete-modal" class="backdrop" hidden>
-    <form id="library-delete-form" class="modal narrow" role="alertdialog" aria-modal="true" aria-labelledby="library-delete-title">
-      <header class="modal-header"><h2 id="library-delete-title">서버 서재 삭제</h2></header>
-      <p id="library-delete-summary" class="delete-summary"></p>
-      <p class="hint">서버에 있는 이 서재의 문서·첨부 자료·변경 이력·충돌 사본을 영구 삭제합니다. 연결한 Writer의 로컬 원고는 남지만, 이 서버 서재와는 더 이상 동기화할 수 없습니다.</p>
-      <label class="delete-name-label">계속하려면 서재 이름을 똑같이 입력해 주세요.<input id="library-delete-name" required autocomplete="off"></label>
-      <footer class="modal-footer">
-        <button type="button" data-library-close="library-delete-modal">취소</button>
-        <button id="library-delete-save" type="submit" class="danger-solid" disabled>서버에서 영구 삭제</button>
-      </footer>
-    </form>
-  </div>
-
-  <div id="confirm-modal" class="backdrop" hidden>
-    <div class="modal narrow" role="alertdialog" aria-modal="true" aria-labelledby="confirm-title">
-      <h2 id="confirm-title"></h2>
-      <p id="confirm-message"></p>
-      <footer class="modal-footer">
-        <button type="button" id="confirm-cancel">취소</button>
-        <button type="button" id="confirm-ok" class="danger-solid"></button>
-      </footer>
-    </div>
-  </div>
-
+  <div id="name-modal" class="backdrop" hidden><form id="name-form" class="modal narrow" role="dialog" aria-modal="true" aria-labelledby="name-title"><header class="modal-header"><h2 id="name-title">서재 만들기</h2></header><label>이름<input id="name-value" required maxlength="200" autocomplete="off"></label><footer class="modal-footer"><button type="button" data-close="name-modal">취소</button><button type="submit" class="primary">저장</button></footer></form></div>
+  <div id="confirm-modal" class="backdrop" hidden><div class="modal narrow" role="alertdialog" aria-modal="true" aria-labelledby="confirm-title"><h2 id="confirm-title"></h2><p id="confirm-message"></p><footer class="modal-footer"><button type="button" id="confirm-cancel">취소</button><button type="button" id="confirm-ok" class="danger-solid">연결 해제</button></footer></div></div>
   <div id="toast" class="toast" role="status" hidden></div>
-  <script src="libraries.js"></script>
-  <script src="app.js"></script>
-</body>
-</html>
+  <script src="libraries.js"></script><script src="realtime.js"></script><script src="app.js"></script>
+</body></html>

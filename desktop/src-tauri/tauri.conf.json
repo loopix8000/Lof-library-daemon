@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Lof Library",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "identifier": "local.lof.library",
   "build": {
     "frontendDist": "../ui"
@@ -11,7 +11,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "Lof Library 서버",
+        "title": "Lof Library",
         "width": 920,
         "height": 780,
         "minWidth": 640,
@@ -41,7 +41,7 @@
       "nsis"
     ],
     "publisher": "Lof Writer",
-    "shortDescription": "Lof Writer 서재 동기화 서버",
+    "shortDescription": "실시간 서재 동기화",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

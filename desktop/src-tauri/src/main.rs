@@ -4,13 +4,10 @@ mod controller;
 mod updater;
 
 use std::fs::OpenOptions;
-use std::net::{IpAddr, Ipv4Addr};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
 
-use controller::{Controller, Settings};
-use lof_library_core::error::ApiError;
+use controller::Controller;
 use serde::Serialize;
 use serde_json::{json, Value};
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
@@ -23,10 +20,6 @@ type Shared = Arc<Controller>;
 
 const HIDDEN_ARG: &str = "--hidden";
 const LOG_LIMIT: u64 = 5 * 1024 * 1024;
-
-fn text(error: ApiError) -> String {
-    error.message().to_string()
-}
 
 fn show(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
@@ -55,149 +48,43 @@ fn init_logging(base: &Path) {
     }
 }
 
-const PUBLIC_IP_SERVICES: [&str; 2] = ["https://api.ipify.org", "https://ipv4.icanhazip.com"];
-const PUBLIC_IP_TTL: Duration = Duration::from_secs(30 * 60);
-const PUBLIC_IP_RETRY: Duration = Duration::from_secs(60);
-
-#[derive(Serialize)]
-struct Address {
-    url: String,
-    kind: &'static str,
-}
-
-fn kind_of(ip: Ipv4Addr) -> Option<&'static str> {
-    let [first, second, ..] = ip.octets();
-    if ip.is_loopback() || ip.is_link_local() || ip.is_unspecified() {
-        None
-    } else if ip.is_private() {
-        Some("lan")
-    } else if first == 100 && (64..128).contains(&second) {
-        // 100.64.0.0/10은 Tailscale 같은 VPN이 사용하는 주소 범위다.
-        Some("vpn")
-    } else {
-        Some("public")
-    }
-}
-
-/// 다른 기기가 접속할 때 사용할 수 있는 주소 목록. 같은 네트워크·VPN·인터넷·이 PC 순서로 둔다.
-fn addresses(settings: &Settings, public: Option<Ipv4Addr>) -> Vec<Address> {
-    let mut found = Vec::new();
-    if settings.allow_lan {
-        for interface in if_addrs::get_if_addrs().unwrap_or_default() {
-            if let IpAddr::V4(ip) = interface.ip() {
-                if let Some(kind) = kind_of(ip) {
-                    found.push((kind, ip));
-                }
-            }
-        }
-        if let Some(ip) = public {
-            found.push(("public", ip));
-        }
-    }
-    let rank = |kind: &str| ["lan", "vpn", "public"].iter().position(|item| *item == kind).unwrap_or(3);
-    found.sort_by_key(|(kind, ip)| (rank(kind), *ip));
-    found.dedup_by_key(|(_, ip)| *ip);
-    let mut list: Vec<Address> = found
-        .into_iter()
-        .map(|(kind, ip)| Address { url: format!("http://{ip}:{}", settings.port), kind })
-        .collect();
-    list.push(Address { url: format!("http://127.0.0.1:{}", settings.port), kind: "local" });
-    list
-}
-
-/// 외부에서 접속할 공인 IP. 공유기 안쪽에서는 외부 서비스에 물어봐야 알 수 있다.
-#[derive(Default)]
-struct PublicIp {
-    value: Option<Ipv4Addr>,
-    checked: Option<Instant>,
-    checking: bool,
-}
-
-type SharedIp = Arc<Mutex<PublicIp>>;
-
-async fn fetch_public_ip() -> Option<Ipv4Addr> {
-    let client = reqwest::Client::builder().timeout(Duration::from_secs(5)).build().ok()?;
-    for service in PUBLIC_IP_SERVICES {
-        let Ok(response) = client.get(service).send().await else { continue };
-        let Ok(text) = response.text().await else { continue };
-        if let Ok(ip) = text.trim().parse::<Ipv4Addr>() {
-            if kind_of(ip) == Some("public") {
-                return Some(ip);
-            }
-        }
-    }
-    None
-}
-
-/// 저장한 공인 IP가 오래됐으면 백그라운드에서 다시 확인한다.
-fn ensure_public_ip(public: &SharedIp, force: bool) {
-    {
-        let mut state = public.lock().unwrap_or_else(|error| error.into_inner());
-        let wait = if state.value.is_some() { PUBLIC_IP_TTL } else { PUBLIC_IP_RETRY };
-        if state.checking || (!force && state.checked.is_some_and(|checked| checked.elapsed() < wait)) {
-            return;
-        }
-        state.checking = true;
-    }
-    let public = public.clone();
-    tauri::async_runtime::spawn(async move {
-        let value = fetch_public_ip().await;
-        let mut state = public.lock().unwrap_or_else(|error| error.into_inner());
-        state.value = value;
-        state.checked = Some(Instant::now());
-        state.checking = false;
-    });
-}
-
 #[derive(Serialize)]
 struct Status {
     state: &'static str,
     message: Option<String>,
-    settings: Settings,
-    addresses: Vec<Address>,
-    /// 공인 IP 확인 상태: checking, ok, unavailable. 다른 기기 접속을 막았으면 없음.
-    public_ip: Option<&'static str>,
+    peer: Option<Value>,
     autostart: bool,
-    server: Option<Value>,
+    version: &'static str,
     data_dir: String,
 }
-
 #[tauri::command]
-fn public_ip_refresh(public: State<'_, SharedIp>) {
-    ensure_public_ip(&public, true);
-}
-
-#[tauri::command]
-async fn server_status(app: AppHandle, controller: State<'_, Shared>, public: State<'_, SharedIp>) -> Result<Status, String> {
+async fn server_status(app: AppHandle, controller: State<'_, Shared>) -> Result<Status, String> {
     let snapshot = controller.snapshot().await;
-    let server = match &snapshot.state {
-        Some(state) => state.server_info().await.ok(),
-        None => None,
-    };
-    let (public_ip, public_state) = if snapshot.settings.allow_lan {
-        ensure_public_ip(&public, false);
-        let state = public.lock().unwrap_or_else(|error| error.into_inner());
-        let label = match (state.value, state.checking || state.checked.is_none()) {
-            (Some(_), _) => "ok",
-            (None, true) => "checking",
-            (None, false) => "unavailable",
-        };
-        (state.value, Some(label))
+    let peer = if let Some(state) = &snapshot.state {
+        let rt = state.realtime.clone();
+        Some(
+            tokio::task::spawn_blocking(move || rt.info())
+                .await
+                .map_err(|_| "피어 상태 확인 실패")?,
+        )
     } else {
-        (None, None)
+        None
+    };
+    let phase = if snapshot.error.is_some() {
+        "error"
+    } else if snapshot.state.is_none() {
+        "stopped"
+    } else if peer.as_ref().is_some_and(|p| p["ready"] == true) {
+        "running"
+    } else {
+        "starting"
     };
     Ok(Status {
-        state: match (&snapshot.state, &snapshot.error) {
-            (Some(_), _) => "running",
-            (None, Some(_)) => "error",
-            (None, None) => "stopped",
-        },
+        state: phase,
         message: snapshot.error,
-        addresses: addresses(&snapshot.settings, public_ip),
-        public_ip: public_state,
-        settings: snapshot.settings,
+        peer,
         autostart: app.autolaunch().is_enabled().unwrap_or(false),
-        server,
+        version: env!("CARGO_PKG_VERSION"),
         data_dir: controller.data_dir.display().to_string(),
     })
 }
@@ -219,19 +106,28 @@ async fn server_restart(controller: State<'_, Shared>) -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn settings_save(
-    app: AppHandle,
-    controller: State<'_, Shared>,
-    port: u16,
-    allow_lan: bool,
-    autostart: bool,
-) -> Result<(), String> {
+fn settings_save(app: AppHandle, autostart: bool) -> Result<(), String> {
     let launcher = app.autolaunch();
     if launcher.is_enabled().unwrap_or(false) != autostart {
-        let result = if autostart { launcher.enable() } else { launcher.disable() };
-        result.map_err(|error| format!("자동 실행 설정을 바꾸지 못했습니다: {error}"))?;
+        let result = if autostart {
+            launcher.enable()
+        } else {
+            launcher.disable()
+        };
+        result.map_err(|e| format!("자동 실행 설정 변경 실패: {e}"))?;
     }
-    controller.save_settings(Settings { port, allow_lan }).await
+    Ok(())
+}
+#[tauri::command]
+async fn open_library(
+    app: AppHandle,
+    controller: State<'_, Shared>,
+    id: String,
+) -> Result<(), String> {
+    let path = controller.state().await?.realtime.library_path(&id)?;
+    app.opener()
+        .open_path(path.display().to_string(), None::<&str>)
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -252,51 +148,9 @@ fn open_log(app: AppHandle, controller: State<'_, Shared>) -> Result<(), String>
         .map_err(|error| format!("로그를 열지 못했습니다: {error}"))
 }
 
-#[tauri::command]
-async fn devices_list(controller: State<'_, Shared>) -> Result<Value, String> {
-    controller.state().await?.devices().await.map_err(text)
-}
-
-#[tauri::command]
-async fn libraries_list(controller: State<'_, Shared>) -> Result<Value, String> {
-    controller.state().await?.managed_libraries().await.map_err(text)
-}
-
-#[tauri::command]
-async fn library_create(controller: State<'_, Shared>, name: String) -> Result<Value, String> {
-    controller.state().await?.managed_library_create(name).await.map_err(text)
-}
-
-#[tauri::command]
-async fn library_rename(controller: State<'_, Shared>, id: String, name: String, expected_version: i64) -> Result<Value, String> {
-    controller.state().await?.managed_library_rename(id, name, expected_version).await.map_err(text)
-}
-
-#[tauri::command]
-async fn library_policy(controller: State<'_, Shared>, id: String, request: lof_library_core::models::PolicyUpdate) -> Result<Value, String> {
-    controller.state().await?.managed_library_policy(id, request).await.map_err(text)
-}
-
-#[tauri::command]
-async fn library_delete(controller: State<'_, Shared>, id: String, name: String, expected_revision: String) -> Result<(), String> {
-    controller.state().await?.managed_library_delete(id, name, expected_revision).await.map_err(text)
-}
-
-#[tauri::command]
-async fn device_rename(controller: State<'_, Shared>, id: String, name: String) -> Result<Value, String> {
-    if name.trim().chars().count() > 100 {
-        return Err("기기 이름은 최대 100자입니다.".into());
-    }
-    controller.state().await?.rename_device(id, name).await.map_err(text)
-}
-
-#[tauri::command]
-async fn device_revoke(controller: State<'_, Shared>, id: String) -> Result<(), String> {
-    controller.state().await?.revoke_device(id).await.map_err(text)
-}
-
 fn qr_svg(text: &str) -> Result<String, String> {
-    let code = qrcode::QrCode::new(text.as_bytes()).map_err(|error| format!("QR을 만들지 못했습니다: {error}"))?;
+    let code = qrcode::QrCode::new(text.as_bytes())
+        .map_err(|error| format!("QR을 만들지 못했습니다: {error}"))?;
     Ok(code
         .render::<qrcode::render::svg::Color>()
         .min_dimensions(220, 220)
@@ -305,41 +159,29 @@ fn qr_svg(text: &str) -> Result<String, String> {
         .build())
 }
 
-/// 기기 이름은 연결하는 기기가 직접 보내므로 받지 않는다.
 #[tauri::command]
-async fn pairing_create(controller: State<'_, Shared>, server_url: String) -> Result<Value, String> {
-    if !lof_library_core::models::valid_server_url(&server_url) {
-        return Err("접속 주소를 다시 선택해 주세요.".into());
-    }
+async fn realtime_manage(
+    controller: State<'_, Shared>,
+    action: String,
+    args: Value,
+) -> Result<Value, String> {
     let state = controller.state().await?;
-    let mut entry = state.create_pairing(String::new(), server_url).await.map_err(text)?;
-    entry["qr_svg"] = Value::String(qr_svg(entry["connection"].as_str().unwrap_or_default())?);
-    Ok(entry)
-}
-
-/// 이미 발급한 코드로 다른 접속 주소의 연결 정보와 QR만 다시 만든다.
-#[tauri::command]
-fn pairing_link(code: String, server_url: String) -> Result<Value, String> {
-    if !lof_library_core::models::valid_server_url(&server_url) {
-        return Err("접속 주소를 다시 선택해 주세요.".into());
+    let mut result =
+        lof_library_core::control::action(state.realtime.clone(), &action, args).await?;
+    if action == "invite" {
+        result["qr_svg"] = json!(qr_svg(result["code"].as_str().unwrap_or(""))?);
     }
-    let connection = lof_library_core::connection_link(&server_url, &code);
-    Ok(json!({ "connection": connection, "server_url": server_url.trim_end_matches('/'), "qr_svg": qr_svg(&connection)? }))
-}
-
-#[tauri::command]
-async fn pairing_cancel(controller: State<'_, Shared>, id: String) -> Result<(), String> {
-    controller.state().await?.cancel_pairing(id).await.map_err(text)
+    Ok(result)
 }
 
 fn build_tray(app: &tauri::App) -> tauri::Result<()> {
     let open = MenuItem::with_id(app, "open", "관리 창 열기", true, None::<&str>)?;
-    let restart = MenuItem::with_id(app, "restart", "서버 다시 시작", true, None::<&str>)?;
+    let restart = MenuItem::with_id(app, "restart", "동기화 다시 시작", true, None::<&str>)?;
     let separator = PredefinedMenuItem::separator(app)?;
     let quit = MenuItem::with_id(app, "quit", "종료", true, None::<&str>)?;
     let menu = Menu::with_items(app, &[&open, &restart, &separator, &quit])?;
     let mut tray = TrayIconBuilder::with_id("main")
-        .tooltip("Lof Library 서버")
+        .tooltip("Lof Library 실시간 동기화")
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id().as_ref() {
@@ -361,7 +203,12 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
             _ => {}
         })
         .on_tray_icon_event(|tray, event| {
-            if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = event {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
                 show(tray.app_handle());
             }
         });
@@ -374,8 +221,13 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
 
 fn main() {
     tauri::Builder::default()
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| show(app)))
-        .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, Some(vec![HIDDEN_ARG])))
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            show(app)
+        }))
+        .plugin(tauri_plugin_autostart::init(
+            MacosLauncher::LaunchAgent,
+            Some(vec![HIDDEN_ARG]),
+        ))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
@@ -383,7 +235,6 @@ fn main() {
             init_logging(&base);
             let controller: Shared = Arc::new(Controller::new(base));
             app.manage(controller.clone());
-            app.manage::<SharedIp>(Arc::default());
             app.manage(updater::Updates::default());
             build_tray(app)?;
             updater::start_checks(app.handle().clone());
@@ -408,24 +259,14 @@ fn main() {
             updater::update_check,
             updater::update_install,
             server_status,
-            public_ip_refresh,
             server_start,
             server_stop,
             server_restart,
             settings_save,
             open_data_dir,
+            open_library,
             open_log,
-            devices_list,
-            libraries_list,
-            library_create,
-            library_rename,
-            library_policy,
-            library_delete,
-            device_rename,
-            device_revoke,
-            pairing_create,
-            pairing_link,
-            pairing_cancel,
+            realtime_manage,
         ])
         .run(tauri::generate_context!())
         .expect("Lof Library를 실행하지 못했습니다.");

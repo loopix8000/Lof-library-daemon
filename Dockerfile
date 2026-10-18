@@ -10,9 +10,7 @@ RUN cargo build --release --locked -p lof-library-server \
 
 FROM debian:bookworm-slim
 
-ENV LOF_DATA_DIR=/data \
-    LOF_HOST=0.0.0.0 \
-    LOF_PORT=8787
+ENV LOF_DATA_DIR=/data
 
 RUN groupadd --gid 10001 lof \
     && useradd --uid 10001 --gid lof --no-create-home lof
@@ -21,7 +19,6 @@ COPY --from=build --chown=lof:lof /out/data /data
 
 USER lof
 VOLUME ["/data"]
-EXPOSE 8787
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s \
     CMD ["lof-library-server", "healthcheck"]
 ENTRYPOINT ["lof-library-server"]

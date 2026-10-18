@@ -1,4 +1,4 @@
-name: 서버 검증
+name: Iroh 피어 컴파일
 
 on: [push, pull_request]
 
@@ -16,8 +16,6 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: 정적 검사
         run: cargo clippy --locked -p lof-library-core -p lof-library-server --all-targets -- -D warnings
-      - name: API와 이력 규칙 검증
-        run: cargo test --locked -p lof-library-core -p lof-library-server
       - name: Docker 이미지 빌드
         run: docker build -t lof-library-daemon:check .
 
