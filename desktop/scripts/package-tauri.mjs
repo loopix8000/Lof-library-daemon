@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -35,6 +36,12 @@ if (!fs.existsSync(tauriCli)) {
   process.exit(1);
 }
 
+// 지난 배포본과 아이콘 내용이 다르면 빌드가 끝난 뒤 Windows 아이콘 캐시도 비운다.
+const iconPath = path.join(desktopDir, "src-tauri", "icons", "icon.ico");
+const iconStamp = path.join(releaseDir, ".icon-sha256");
+const iconHash = createHash("sha256").update(fs.readFileSync(iconPath)).digest("hex");
+const iconChanged = !fs.existsSync(iconStamp) || fs.readFileSync(iconStamp, "utf8").trim() !== iconHash;
+
 const tauriArgs = mode === "nsis" ? [tauriCli, "build", "--bundles", "nsis"] : [tauriCli, "build", "--no-bundle"];
 const result = spawnSync(process.execPath, tauriArgs, { cwd: desktopDir, stdio: "inherit" });
 if (result.status !== 0) {
@@ -69,5 +76,27 @@ if (mode === "nsis") {
     }
   }
 }
+
+if (process.platform === "win32" && iconChanged) {
+  // 같은 경로의 실행 파일은 탐색기가 옛 아이콘을 계속 보여 주므로 고정된 바로 가기와 아이콘 캐시를 정리한다.
+  const pinned = path.join(process.env.APPDATA || "", "Microsoft", "Internet Explorer", "Quick Launch", "User Pinned", "ImplicitAppShortcuts");
+  for (const folder of fs.existsSync(pinned) ? fs.readdirSync(pinned) : []) {
+    const shortcut = path.join(pinned, folder, `${path.parse(targetExeName).name}.lnk`);
+    if (fs.existsSync(shortcut)) fs.rmSync(shortcut, { force: true });
+  }
+  const explorerCache = path.join(process.env.LOCALAPPDATA || "", "Microsoft", "Windows", "Explorer");
+  for (const file of fs.existsSync(explorerCache) ? fs.readdirSync(explorerCache) : []) {
+    if (!file.startsWith("iconcache_") || !file.endsWith(".db")) continue;
+    try {
+      fs.rmSync(path.join(explorerCache, file), { force: true });
+    } catch {
+      // 탐색기가 사용 중인 캐시는 건너뛴다.
+    }
+  }
+  spawnSync("ie4uinit.exe", ["-ClearIconCache"], { stdio: "ignore", timeout: 3000 });
+  spawnSync("ie4uinit.exe", ["-show"], { stdio: "ignore", timeout: 3000 });
+  console.log("아이콘이 바뀌어 Windows 아이콘 캐시를 정리했습니다.");
+}
+fs.writeFileSync(iconStamp, iconHash);
 
 console.log(`Lof Library ${pkg.version} 폴더 배포본: ${unpackedDir}`);
