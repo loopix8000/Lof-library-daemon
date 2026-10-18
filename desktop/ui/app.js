@@ -16,6 +16,7 @@ let pairing = null;
 let pairingTimer = null;
 let toastTimer = null;
 let settingsLoaded = false;
+let updateStatus = null;
 
 // 공통
 
@@ -213,6 +214,29 @@ function renderSettings() {
   $("data-dir").textContent = status.data_dir;
 }
 
+function renderUpdate() {
+  if (!updateStatus) return;
+  const { phase, current_version: current, version, progress, message } = updateStatus;
+  const busy = ["checking", "downloading", "installing"].includes(phase);
+  $("update-version").textContent = version ? `v${current} → v${version}` : `현재 버전 v${current}`;
+  $("update-message").textContent = message || {
+    idle: "새 버전을 자동으로 확인합니다.",
+    checking: "새 버전을 확인하고 있습니다…",
+    available: "새 버전을 설치할 수 있습니다.",
+    latest: "최신 버전입니다.",
+    downloading: progress === null ? "업데이트를 내려받고 있습니다…" : `업데이트 다운로드 중 ${progress}%`,
+    installing: "서버를 종료하고 업데이트를 설치합니다…",
+  }[phase] || "잠시 후 다시 확인해 주세요.";
+  $("update-check").disabled = busy;
+  $("update-install").hidden = !version;
+  $("update-install").disabled = busy;
+}
+
+async function refreshUpdate() {
+  updateStatus = await invoke("update_status");
+  renderUpdate();
+}
+
 function renderDevices() {
   const running = status.state === "running";
   $("devices-empty").hidden = !running || devices.length > 0;
@@ -284,8 +308,8 @@ function renderPairingAddresses() {
 
 function renderPairing() {
   clearInterval(pairingTimer);
-  const stage = !pairing ? "form" : pairing.done ? "done" : "result";
-  $("pairing-form").hidden = stage !== "form";
+  const stage = !pairing ? "loading" : pairing.done ? "done" : "result";
+  $("pairing-loading").hidden = stage !== "loading";
   $("pairing-result").hidden = stage !== "result";
   $("pairing-done").hidden = stage !== "done";
   if (stage === "done") {
@@ -341,6 +365,30 @@ async function refresh() {
 
 // 이벤트
 
+$("update-check").addEventListener("click", async () => {
+  $("update-check").disabled = true;
+  try {
+    await invoke("update_check");
+  } catch (error) {
+    failure(error);
+  } finally {
+    await refreshUpdate().catch(failure);
+  }
+});
+
+$("update-install").addEventListener("click", async () => {
+  const ok = await confirmDialog("업데이트를 설치할까요?", "설치하는 동안 서버가 잠시 종료됩니다. 설치 후 다시 시작하면 기존 데이터와 기기 연결을 이어서 사용합니다.", "설치하고 다시 시작");
+  if (!ok) return;
+  $("update-install").disabled = true;
+  try {
+    await invoke("update_install");
+  } catch (error) {
+    failure(error);
+  } finally {
+    await refreshUpdate().catch(failure);
+  }
+});
+
 for (const item of document.querySelectorAll(".nav button")) {
   item.addEventListener("click", () => showPage(item.dataset.page));
 }
@@ -363,10 +411,7 @@ document.addEventListener("click", (event) => {
   if (!target) return;
   const action = target.dataset.action;
   if (action === "add-device") {
-    pairing = null;
-    $("pairing-form").reset();
-    renderPairing();
-    openModal("pairing-modal");
+    startPairing();
   } else if (action === "close-pairing") {
     closeModal("pairing-modal");
     clearInterval(pairingTimer);
@@ -391,17 +436,38 @@ document.addEventListener("keydown", (event) => {
   else if (!$("pairing-modal").hidden) document.querySelector('#pairing-modal [data-action="close-pairing"]').click();
 });
 
-$("pairing-form").addEventListener("submit", (event) => {
-  event.preventDefault();
-  run(event.submitter, async () => {
+// 기기 추가를 누르면 맨 앞 접속 주소로 바로 코드를 발급해 보여 준다.
+async function startPairing() {
+  pairing = null;
+  renderPairing();
+  const select = $("pairing-url");
+  if (status?.addresses?.length) select.value = status.addresses[0].url;
+  openModal("pairing-modal");
+  try {
     const known = new Set(devices.map((device) => device.id));
-    const entry = await invoke("pairing_create", {
-      name: $("pairing-name").value,
-      serverUrl: $("pairing-url").value,
-    });
+    const entry = await invoke("pairing_create", { serverUrl: select.value });
+    // 발급 중에 창을 닫았으면 쓰지 않을 코드를 바로 취소한다.
+    if ($("pairing-modal").hidden) {
+      invoke("pairing_cancel", { id: entry.id }).catch(() => {});
+      return;
+    }
     pairing = { entry, known, done: null };
     renderPairing();
-  });
+  } catch (error) {
+    closeModal("pairing-modal");
+    failure(error);
+  }
+}
+
+// 접속 주소를 바꾸면 같은 코드로 연결 정보와 QR만 다시 만든다.
+$("pairing-url").addEventListener("change", (event) => {
+  if (!pairing || pairing.done) return;
+  invoke("pairing_link", { code: pairing.entry.code, serverUrl: event.target.value })
+    .then((link) => {
+      Object.assign(pairing.entry, link);
+      $("pairing-qr").innerHTML = link.qr_svg;
+    })
+    .catch(failure);
 });
 
 $("pairing-copy").addEventListener("click", () => {
@@ -440,3 +506,5 @@ $("settings-autostart").addEventListener("change", (event) => {
 
 refresh();
 setInterval(refresh, 3000);
+refreshUpdate().catch(failure);
+setInterval(() => refreshUpdate().catch(failure), 1000);

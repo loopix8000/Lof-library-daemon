@@ -6,6 +6,7 @@
   "description": "Lof Writer 서재 동기화 서버 설치형 앱",
   "scripts": {
     "tauri": "tauri",
+    "updater:prepare": "node scripts/prepare-updater.mjs",
     "package": "node scripts/package-tauri.mjs dir",
     "package:dir": "node scripts/package-tauri.mjs dir",
     "package:nsis": "node scripts/package-tauri.mjs nsis"

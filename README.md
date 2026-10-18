@@ -63,8 +63,9 @@ docker compose exec daemon lof-library-server reset-admin
 - 접속 주소는 같은 네트워크·VPN(Tailscale 등)·인터넷(공인 IP)·이 PC로 나눠 보여 줍니다. 공인 IP는 외부 조회 서비스(ipify, icanhazip)로 확인하며, 인터넷에서 접속하려면 공유기에서 포트 포워딩을 설정해야 합니다.
 - 포트, 다른 기기 접속 허용, PC 시작 시 자동 실행을 설정합니다. 자동 실행 때는 창 없이 트레이에서 시작합니다.
 - 데이터는 `%APPDATA%\local.lof.library\data`에 저장합니다. 업데이트·재설치해도 유지되며, 설치 제거 때 데이터 삭제 여부를 선택합니다.
+- 시작할 때와 6시간마다 새 버전을 확인합니다. **설정 → 업데이트**에서 직접 확인하거나 설치할 수 있습니다. 다운로드와 서명 검증이 끝난 뒤 서버를 종료하고 업데이트를 설치합니다.
 
-배포본 만들기(Node.js와 Rust 필요):
+배포본 만들기(Node.js와 Rust 1.90 이상 필요):
 
 ```powershell
 cd desktop
@@ -75,6 +76,22 @@ npm run package:nsis
 
 `package:dir`은 `C:\Projects\lof-library-daemon\release\win-unpacked`에 실행 파일 하나로 된 폴더 배포본을 만듭니다.
 `package:nsis`는 같은 폴더 배포본과 함께 설치 파일을 `C:\Projects\lof-library-daemon\release`에 복사합니다.
+
+### GitHub에서 업데이트 배포
+
+저장소의 **Settings → Secrets and variables → Actions**에 다음 값을 등록합니다.
+
+| 구분 | 이름 | 값 |
+| --- | --- | --- |
+| Secret | `TAURI_SIGNING_PRIVATE_KEY` | 업데이트 서명 비밀키 파일 전체 내용 |
+| Secret(암호를 설정한 경우) | `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | 비밀키 암호 |
+| Variable | `TAURI_UPDATER_PUBLIC_KEY` | 앱에 설정한 공개키와 동일한 공개키 파일 전체 내용 |
+
+버전은 루트 `Cargo.toml`, `desktop/package.json`, `desktop/src-tauri/tauri.conf.json`을 함께 바꾸고 공개할 변경 사항을 `RELEASE_NOTES.md`에 작성합니다.
+**Actions → Windows 업데이트 배포 → Run workflow**를 실행하면 서명된 NSIS 설치 파일, `.sig`, `latest.json`이 포함된 초안 릴리즈를 만듭니다.
+초안의 내용을 확인하고 정식 릴리즈로 공개하면 기존 앱이 새 버전을 확인할 수 있습니다. 베타 등 사전 릴리즈는 정식 업데이트 경로에 노출되지 않습니다.
+첫 배포는 설치 파일을 직접 설치해야 하며, 이후 현재 앱보다 높은 버전의 정식 릴리즈부터 업데이트할 수 있습니다.
+비밀키는 소스에 포함하지 않고 계속 보관합니다. 기존 앱의 업데이트를 이어가려면 같은 서명키를 사용해야 합니다.
 
 ## 외부 연결 확인
 

@@ -24,6 +24,13 @@
       "csp": "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; connect-src ipc: http://ipc.localhost"
     }
   },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEIyQkYwNEUxOEQxMzdFNDcKUldSSGZoT040UVMvc2gwU0NoWEZic2VzTGxocEx2aVJ2OXFYckRlS2M0RmFQNW9sQVh1a1BxcWsK",
+      "endpoints": ["https://github.com/loopix8000/Lof-library-daemon/releases/latest/download/latest.json"],
+      "windows": { "installMode": "passive" }
+    }
+  },
   "bundle": {
     "active": true,
     "targets": ["nsis"],

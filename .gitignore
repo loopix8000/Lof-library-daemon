@@ -1,7 +1,9 @@
 /target/
 desktop/node_modules/
 desktop/src-tauri/gen/
+desktop/src-tauri/tauri.updater.generated.json
 .env
 data/
 *.sqlite
 *.sqlite-*
+.private

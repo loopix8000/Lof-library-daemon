@@ -368,6 +368,9 @@ h2 { margin: 0 0 6px; font-size: 14px; font-weight: 600; color: var(--strong); }
 .hint { margin: -6px 0 0; font-size: 12px; line-height: 1.7; color: var(--muted); }
 
 .pairing { display: flex; gap: 20px; align-items: center; }
+.pairing-loading { margin: 24px 0 8px; text-align: center; }
+.modal label.pairing-address { margin: 20px 0 0; }
+#pairing-local-hint { margin-top: 8px; }
 .qr { flex: none; width: 168px; height: 168px; padding: 8px; border: 1px solid var(--border); border-radius: 10px; background: #ffffff; }
 .qr svg { display: block; width: 100%; height: 100%; stroke: none; fill: initial; }
 .pairing-text { display: grid; gap: 6px; justify-items: start; min-width: 0; }

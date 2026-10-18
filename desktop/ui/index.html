@@ -133,6 +133,19 @@
         </section>
 
         <section class="section">
+          <h2>업데이트</h2>
+          <div class="rows">
+            <div class="row">
+              <span><b id="update-version">버전 확인 중</b><small id="update-message" role="status">새 버전을 자동으로 확인합니다.</small></span>
+              <div class="actions">
+                <button id="update-check" type="button" class="small">업데이트 확인</button>
+                <button id="update-install" type="button" class="small primary" hidden>설치하고 다시 시작</button>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="section">
           <h2>데이터</h2>
           <div class="rows">
             <div class="row">
@@ -156,26 +169,20 @@
         <button type="button" class="icon" data-action="close-pairing" aria-label="닫기"><svg><use href="#i-close"/></svg></button>
       </header>
 
-      <form id="pairing-form">
-        <label>기기 이름<input id="pairing-name" maxlength="100" placeholder="예: 작업용 노트북"></label>
-        <label>접속 주소<select id="pairing-url"></select></label>
-        <p id="pairing-local-hint" class="hint" hidden>다른 기기에서 접속하려면 설정에서 ‘다른 기기에서 접속 허용’을 켜 주세요.</p>
-        <footer class="modal-footer">
-          <button type="button" data-action="close-pairing">취소</button>
-          <button type="submit" class="primary">연결 코드 발급</button>
-        </footer>
-      </form>
+      <p id="pairing-loading" class="hint pairing-loading">연결 코드를 발급하고 있습니다…</p>
 
       <div id="pairing-result" hidden>
         <div class="pairing">
           <div id="pairing-qr" class="qr" aria-label="연결 정보 QR"></div>
           <div class="pairing-text">
-            <p class="hint">Lof Writer의 서버 연결 화면에서 QR을 읽거나 아래 코드를 입력해 주세요.</p>
+            <p class="hint">Lof Writer의 설정 → 외부 저장소에서 ‘Lof Library 서버’를 고른 뒤 연결 정보를 붙여넣어 주세요.</p>
             <p id="pairing-code" class="code"></p>
             <p id="pairing-expiry" class="expiry"></p>
             <button id="pairing-copy" type="button" class="small"><svg><use href="#i-copy"/></svg>연결 정보 복사</button>
           </div>
         </div>
+        <label class="pairing-address">접속 주소<select id="pairing-url"></select></label>
+        <p id="pairing-local-hint" class="hint" hidden>다른 기기에서 접속하려면 설정에서 ‘다른 기기에서 접속 허용’을 켜 주세요.</p>
         <footer class="modal-footer">
           <button type="button" class="danger-outline" data-action="cancel-pairing">코드 취소</button>
           <button type="button" class="primary" data-action="close-pairing">닫기</button>

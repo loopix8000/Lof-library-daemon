@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod controller;
+mod updater;
 
 use std::fs::OpenOptions;
 use std::net::{IpAddr, Ipv4Addr};
@@ -11,7 +12,7 @@ use std::time::{Duration, Instant};
 use controller::{Controller, Settings};
 use lof_library_core::error::ApiError;
 use serde::Serialize;
-use serde_json::Value;
+use serde_json::{json, Value};
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Manager, State, WindowEvent};
@@ -269,30 +270,36 @@ async fn device_revoke(controller: State<'_, Shared>, id: String) -> Result<(), 
     controller.state().await?.revoke_device(id).await.map_err(text)
 }
 
-#[tauri::command]
-async fn pairing_create(
-    controller: State<'_, Shared>,
-    name: String,
-    server_url: String,
-) -> Result<Value, String> {
-    if name.chars().count() > 100 {
-        return Err("기기 이름은 최대 100자입니다.".into());
-    }
-    if !lof_library_core::models::valid_server_url(&server_url) {
-        return Err("접속 주소를 다시 선택해 주세요.".into());
-    }
-    let state = controller.state().await?;
-    let mut entry = state.create_pairing(name, server_url).await.map_err(text)?;
-    let connection = entry["connection"].as_str().unwrap_or_default().to_string();
-    let code = qrcode::QrCode::new(connection.as_bytes()).map_err(|error| format!("QR을 만들지 못했습니다: {error}"))?;
-    let svg = code
+fn qr_svg(text: &str) -> Result<String, String> {
+    let code = qrcode::QrCode::new(text.as_bytes()).map_err(|error| format!("QR을 만들지 못했습니다: {error}"))?;
+    Ok(code
         .render::<qrcode::render::svg::Color>()
         .min_dimensions(220, 220)
         .dark_color(qrcode::render::svg::Color("#000000"))
         .light_color(qrcode::render::svg::Color("#ffffff"))
-        .build();
-    entry["qr_svg"] = Value::String(svg);
+        .build())
+}
+
+/// 기기 이름은 연결하는 기기가 직접 보내므로 받지 않는다.
+#[tauri::command]
+async fn pairing_create(controller: State<'_, Shared>, server_url: String) -> Result<Value, String> {
+    if !lof_library_core::models::valid_server_url(&server_url) {
+        return Err("접속 주소를 다시 선택해 주세요.".into());
+    }
+    let state = controller.state().await?;
+    let mut entry = state.create_pairing(String::new(), server_url).await.map_err(text)?;
+    entry["qr_svg"] = Value::String(qr_svg(entry["connection"].as_str().unwrap_or_default())?);
     Ok(entry)
+}
+
+/// 이미 발급한 코드로 다른 접속 주소의 연결 정보와 QR만 다시 만든다.
+#[tauri::command]
+fn pairing_link(code: String, server_url: String) -> Result<Value, String> {
+    if !lof_library_core::models::valid_server_url(&server_url) {
+        return Err("접속 주소를 다시 선택해 주세요.".into());
+    }
+    let connection = lof_library_core::connection_link(&server_url, &code);
+    Ok(json!({ "connection": connection, "server_url": server_url.trim_end_matches('/'), "qr_svg": qr_svg(&connection)? }))
 }
 
 #[tauri::command]
@@ -345,13 +352,16 @@ fn main() {
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| show(app)))
         .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, Some(vec![HIDDEN_ARG])))
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             let base = app.path().app_data_dir()?;
             init_logging(&base);
             let controller: Shared = Arc::new(Controller::new(base));
             app.manage(controller.clone());
             app.manage::<SharedIp>(Arc::default());
+            app.manage(updater::Updates::default());
             build_tray(app)?;
+            updater::start_checks(app.handle().clone());
             tauri::async_runtime::spawn(async move {
                 let _ = controller.start().await;
             });
@@ -369,6 +379,9 @@ fn main() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            updater::update_status,
+            updater::update_check,
+            updater::update_install,
             server_status,
             public_ip_refresh,
             server_start,
@@ -381,6 +394,7 @@ fn main() {
             device_rename,
             device_revoke,
             pairing_create,
+            pairing_link,
             pairing_cancel,
         ])
         .run(tauri::generate_context!())
