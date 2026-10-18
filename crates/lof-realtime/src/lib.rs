@@ -1,11 +1,13 @@
 //! Writer와 상시 보관 피어가 함께 사용하는 인증된 원본 파일 전송 계층.
 use iroh::{endpoint::presets, Endpoint, SecretKey};
 pub use iroh::{endpoint::Connection, EndpointAddr, EndpointId};
+use iroh_gossip::{net::GOSSIP_ALPN, Gossip};
 use serde_json::{json, Value};
 use std::{sync::Arc, time::Duration};
 use tokio::sync::Semaphore;
-pub mod storage;
+pub mod group;
 pub mod replica;
+pub mod storage;
 
 pub const ALPN: &[u8] = b"lof/realtime-files/1";
 pub const MAX_FILE: usize = 50_000_000;
@@ -35,6 +37,8 @@ pub trait Host: Send + Sync + 'static {
 #[derive(Clone)]
 pub struct Node {
     pub endpoint: Endpoint,
+    /// 그룹 구성원 목록과 변경 알림을 퍼뜨린다. 원고 파일은 전송하지 않는다.
+    pub gossip: Gossip,
     host: Arc<dyn Host>,
     slots: Arc<Semaphore>,
 }
@@ -42,34 +46,46 @@ impl Node {
     pub async fn bind(secret: SecretKey, host: Arc<dyn Host>) -> Result<Self> {
         let endpoint = Endpoint::builder(presets::N0)
             .secret_key(secret)
-            .alpns(vec![ALPN.to_vec()])
+            .alpns(vec![ALPN.to_vec(), GOSSIP_ALPN.to_vec()])
             .bind()
             .await
             .map_err(|e| e.to_string())?;
+        let gossip = Gossip::builder()
+            .max_message_size(group::MAX_ANNOUNCEMENT)
+            .spawn(endpoint.clone());
         let node = Self {
             endpoint,
+            gossip,
             host,
             slots: Arc::new(Semaphore::new(24)),
         };
         let acceptor = node.clone();
         tokio::spawn(async move {
             while let Some(incoming) = acceptor.endpoint.accept().await {
-                let Ok(permit) = acceptor.slots.clone().try_acquire_owned() else {
-                    incoming.refuse();
-                    continue;
-                };
                 let node = acceptor.clone();
                 tokio::spawn(async move {
-                    let _permit = permit;
-                    if let Ok(Ok(connection)) =
+                    let Ok(Ok(connection)) =
                         tokio::time::timeout(Duration::from_secs(20), incoming).await
-                    {
-                        node.serve(connection).await;
+                    else {
+                        return;
+                    };
+                    if connection.alpn() == GOSSIP_ALPN {
+                        let _ = node.gossip.handle_connection(connection).await;
+                        return;
                     }
+                    let Ok(_permit) = node.slots.clone().try_acquire_owned() else {
+                        connection.close(2u8.into(), b"busy");
+                        return;
+                    };
+                    node.serve(connection).await;
                 });
             }
         });
         Ok(node)
+    }
+    pub async fn close(&self) {
+        let _ = self.gossip.shutdown().await;
+        self.endpoint.close().await;
     }
     pub async fn connect(&self, addr: EndpointAddr) -> Result<Connection> {
         let connection =

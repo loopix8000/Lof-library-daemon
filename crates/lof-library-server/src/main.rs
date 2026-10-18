@@ -28,15 +28,19 @@ enum Command {
     Create {
         name: String,
     },
-    /// 이 서재에 연결할 일회용 코드와 QR을 발급한다.
+    /// 이 서재의 동기화 그룹에 초대할 일회용 페어링 코드와 QR을 발급한다. 그룹이 없으면 새로 만든다.
     Invite {
         library_id: String,
     },
-    /// 다른 Writer 또는 Library의 코드로 연결한다. 코드 생략 시 표준 입력에서 읽는다.
+    /// 다른 Writer 또는 Library의 페어링 코드로 그룹에 가입한다. 코드 생략 시 표준 입력에서 읽는다.
     Pair {
         library_id: String,
         #[arg(long)]
         code: Option<String>,
+    },
+    /// 이 서재를 동기화 그룹에서 뺀다.
+    Leave {
+        library_id: String,
     },
     CancelInvite {
         library_id: String,
@@ -98,7 +102,7 @@ async fn main() -> ExitCode {
                     let result = manage(&cli, "invite", json!({"id":library_id}))?;
                     let code = result["code"]
                         .as_str()
-                        .ok_or("연결 코드를 받지 못했습니다.")?;
+                        .ok_or("페어링 코드를 받지 못했습니다.")?;
                     if let Ok(qr) = qrcode::QrCode::new(code.as_bytes()) {
                         eprintln!(
                             "{}",
@@ -120,6 +124,7 @@ async fn main() -> ExitCode {
                     };
                     manage(&cli, "pair", json!({"id":library_id,"code":code}))?
                 }
+                Command::Leave { library_id } => manage(&cli, "leave", json!({"id":library_id}))?,
                 Command::CancelInvite { library_id } => {
                     manage(&cli, "cancelInvite", json!({"id":library_id}))?
                 }

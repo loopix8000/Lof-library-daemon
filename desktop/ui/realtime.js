@@ -16,14 +16,14 @@ window.peerConnections = (() => {
     });
     element("invite-copy").addEventListener("click", () => app.copy(element("invite-code").value));
     element("invite-cancel").addEventListener("click", () => app.perform(element("invite-cancel"), async () => {
-      if (invitation) await app.manage("cancelInvite", { id: invitation.id }); invitation = null; element("invite-result").hidden = true; element("invite-notice").textContent = "연결 코드를 취소했습니다.";
+      if (invitation) await app.manage("cancelInvite", { id: invitation.id }); invitation = null; element("invite-result").hidden = true; element("invite-notice").textContent = "페어링 코드를 취소했습니다.";
     }));
     element("connect-form").addEventListener("submit", event => {
       event.preventDefault(); const form = event.currentTarget;
       app.perform(form.querySelector('[type="submit"]'), async () => {
-        element("connect-notice").textContent = "상대 기기에 연결하고 있습니다…";
+        element("connect-notice").textContent = "그룹에 가입하고 있습니다…";
         await app.manage("pair", { id: element("connect-library").value, code: element("connect-code").value.trim() });
-        element("connect-code").value = ""; element("connect-notice").textContent = "기기를 연결했습니다. 동기화를 시작합니다."; app.navigate("devices"); app.toast("기기를 연결했습니다.");
+        element("connect-code").value = ""; element("connect-notice").textContent = "그룹에 가입했습니다. 그룹의 기기와 동기화를 시작합니다."; app.navigate("devices"); app.toast("그룹에 가입했습니다.");
       });
     });
     setInterval(tick, 1000);
@@ -32,13 +32,13 @@ window.peerConnections = (() => {
     if (!invitation) return;
     const seconds = Math.max(0, Math.ceil((invitation.until - Date.now()) / 1000));
     element("invite-expiry").textContent = `한 번만 사용 가능 · ${Math.floor(seconds / 60)}분 ${seconds % 60}초 뒤 만료`;
-    if (!seconds) { invitation = null; element("invite-result").hidden = true; element("invite-notice").textContent = "연결 코드가 만료되었습니다. 새 코드를 만들어 주세요."; }
+    if (!seconds) { invitation = null; element("invite-result").hidden = true; element("invite-notice").textContent = "페어링 코드가 만료되었습니다. 새 코드를 만들어 주세요."; }
   }
   function refresh(status) {
     const ready = status?.state === "running";
     for (const id of ["invite-form", "connect-form"]) for (const input of element(id).querySelectorAll("button,input,select,textarea")) input.disabled = !ready || window.libraryApp.busy;
     if (invitation && status.peer?.pendingInvites && !status.peer.pendingInvites.includes(invitation.id)) {
-      invitation = null; element("invite-result").hidden = true; element("invite-notice").textContent = "기기가 연결되었습니다. 연결된 기기 메뉴에서 확인할 수 있습니다.";
+      invitation = null; element("invite-result").hidden = true; element("invite-notice").textContent = "기기가 그룹에 가입했습니다. 그룹 기기 메뉴에서 확인할 수 있습니다.";
     }
   }
   return { init, refresh };

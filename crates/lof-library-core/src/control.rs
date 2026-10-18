@@ -43,6 +43,14 @@ pub async fn action(peer: Arc<Realtime>, method: &str, args: Value) -> Result<Va
             peer.cancel_invite(args["id"].as_str().unwrap_or(""));
             Ok(json!(true))
         }
+        "leave" => {
+            peer.leave(args["id"].as_str().unwrap_or(""))?;
+            Ok(json!(true))
+        }
+        "dismissReset" => {
+            peer.dismiss_reset()?;
+            Ok(json!(true))
+        }
         "remove" => {
             peer.remove_peer(
                 args["vault"].as_str().unwrap_or(""),

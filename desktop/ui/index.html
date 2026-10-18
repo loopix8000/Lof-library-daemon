@@ -22,9 +22,9 @@
       <nav class="nav" aria-label="관리 메뉴">
         <button type="button" data-page="overview" aria-pressed="true"><svg><use href="#i-home"/></svg>개요</button>
         <button type="button" data-page="libraries" aria-pressed="false"><svg><use href="#i-library"/></svg>서재</button>
-        <button type="button" data-page="devices" aria-pressed="false"><svg><use href="#i-devices"/></svg>연결된 기기</button>
-        <button type="button" data-page="invite" aria-pressed="false"><svg><use href="#i-plus"/></svg>연결 코드 만들기</button>
-        <button type="button" data-page="connect" aria-pressed="false"><svg><use href="#i-devices"/></svg>다른 기기 연결</button>
+        <button type="button" data-page="devices" aria-pressed="false"><svg><use href="#i-devices"/></svg>그룹 기기</button>
+        <button type="button" data-page="invite" aria-pressed="false"><svg><use href="#i-plus"/></svg>초대 코드 만들기</button>
+        <button type="button" data-page="connect" aria-pressed="false"><svg><use href="#i-devices"/></svg>그룹 가입</button>
         <button type="button" data-page="settings" aria-pressed="false"><svg><use href="#i-settings"/></svg>설정</button>
       </nav>
       <p id="version" class="version"></p>
@@ -32,26 +32,26 @@
     <main class="content">
       <div id="error-callout" class="callout danger" role="alert" hidden><svg><use href="#i-alert"/></svg><div><strong>동기화를 시작하지 못했습니다</strong><p id="error-message"></p><button type="button" class="small" data-action="open-log" data-desktop-only>로그 열기</button></div></div>
       <section id="page-overview" class="page">
-        <header class="page-header"><div><h1>실시간 동기화</h1></div><button type="button" class="primary" data-go="connect">다른 기기 연결</button></header>
+        <header class="page-header"><div><h1>실시간 동기화</h1></div><button type="button" class="primary" data-go="connect">그룹 가입</button></header>
         <section class="section"><h2>동기화 현황</h2><dl class="stats"><div><dt>서재</dt><dd id="stat-libraries">-</dd></div><div><dt>원본 파일</dt><dd id="stat-files">-</dd></div><div><dt>연결된 기기</dt><dd id="stat-online">-</dd></div><div><dt>원본 용량</dt><dd id="stat-storage">-</dd></div></dl></section>
-        <section class="section"><h2>기기 연결</h2><div class="connection-choices"><button type="button" data-go="invite"><strong>이 서재에 기기 초대</strong><span>QR·일회용 코드를 만들어 다른 기기에 전달합니다.</span></button><button type="button" data-go="connect"><strong>다른 기기에 연결</strong><span>Writer 또는 다른 Lof Library의 코드를 입력합니다.</span></button></div></section>
+        <section class="section"><h2>동기화 그룹</h2><div class="connection-choices"><button type="button" data-go="invite"><strong>그룹에 기기 초대</strong><span>QR·일회용 페어링 코드를 만들어 다른 기기에 전달합니다. 그룹이 없으면 새로 만듭니다.</span></button><button type="button" data-go="connect"><strong>기존 그룹에 가입</strong><span>그룹에 속한 Writer 또는 Lof Library의 코드를 입력하면 나머지 기기도 자동으로 연결합니다.</span></button></div></section>
       </section>
       <section id="page-libraries" class="page" hidden>
         <header class="page-header"><div><h1>서재</h1></div><button type="button" class="primary" data-action="create-library">서재 만들기</button></header>
         <ul id="libraries" class="list library-list"></ul><div id="libraries-empty" class="empty"><strong>아직 서재가 없습니다</strong><p>서재를 만든 뒤 다른 기기를 연결하세요.</p></div>
       </section>
       <section id="page-devices" class="page" hidden>
-        <header class="page-header"><div><h1>연결된 기기</h1></div><button type="button" data-go="connect" class="primary">기기 연결</button></header>
-        <ul id="devices" class="list"></ul><div id="devices-empty" class="empty"><strong>연결된 기기가 없습니다</strong><p>연결 코드를 만들거나 다른 기기의 코드로 연결하세요.</p></div>
+        <header class="page-header"><div><h1>그룹 기기</h1></div><button type="button" data-go="connect" class="primary">그룹 가입</button></header>
+        <ul id="devices" class="list"></ul><div id="devices-empty" class="empty"><strong>그룹에 다른 기기가 없습니다</strong><p>초대 코드를 만들거나 다른 기기의 코드로 그룹에 가입하세요.</p></div>
       </section>
       <section id="page-invite" class="page" hidden>
-        <header class="page-header"><div><h1>연결 코드 만들기</h1></div></header>
-        <form id="invite-form" class="peer-form"><label>공유할 서재<select name="id" id="invite-library" required></select></label><button type="button" class="small" data-action="create-library">새 서재 만들기</button><button type="submit" class="primary">QR·연결 코드 만들기</button></form>
-        <div id="invite-result" class="invite-result" hidden><img id="invite-qr" width="240" height="240" alt="기기 연결 QR 코드"><div><p>다른 기기의 ‘다른 기기 연결’ 화면에 코드를 입력하세요.</p><p id="invite-expiry" class="hint"></p><textarea id="invite-code" readonly rows="4" aria-label="기기 연결 코드"></textarea><div class="actions"><button type="button" id="invite-copy">코드 복사</button><button type="button" id="invite-cancel">코드 취소</button></div></div></div><p id="invite-notice" role="status"></p>
+        <header class="page-header"><div><h1>초대 코드 만들기</h1></div></header>
+        <form id="invite-form" class="peer-form"><label>공유할 서재<select name="id" id="invite-library" required></select></label><button type="button" class="small" data-action="create-library">새 서재 만들기</button><button type="submit" class="primary">QR·페어링 코드 만들기</button></form>
+        <div id="invite-result" class="invite-result" hidden><img id="invite-qr" width="240" height="240" alt="그룹 페어링 QR 코드"><div><p>다른 기기의 ‘그룹 가입’ 화면에 코드를 입력하세요. 가입한 기기는 그룹의 다른 기기와도 자동으로 연결됩니다.</p><p id="invite-expiry" class="hint"></p><textarea id="invite-code" readonly rows="4" aria-label="그룹 페어링 코드"></textarea><div class="actions"><button type="button" id="invite-copy">코드 복사</button><button type="button" id="invite-cancel">코드 취소</button></div></div></div><p id="invite-notice" role="status"></p>
       </section>
       <section id="page-connect" class="page" hidden>
-        <header class="page-header"><div><h1>다른 기기 연결</h1><p class="description">Writer 또는 다른 Lof Library에서 만든 코드를 입력합니다.</p></div></header>
-        <form id="connect-form" class="peer-form"><label>연결할 내 서재<select name="id" id="connect-library" required></select></label><button type="button" class="small" data-action="create-library">새 서재 만들기</button><label>상대 기기의 연결 코드<textarea name="code" id="connect-code" rows="5" required maxlength="16384" placeholder="연결 코드를 붙여넣으세요"></textarea></label><p class="hint">선택한 서재와 상대 서재의 파일을 서로 동기화합니다.</p><button type="submit" class="primary">기기 연결</button><p id="connect-notice" role="status"></p></form>
+        <header class="page-header"><div><h1>그룹 가입</h1><p class="description">그룹에 속한 Writer 또는 Lof Library에서 만든 페어링 코드를 입력합니다.</p></div></header>
+        <form id="connect-form" class="peer-form"><label>가입할 내 서재<select name="id" id="connect-library" required></select></label><button type="button" class="small" data-action="create-library">새 서재 만들기</button><label>페어링 코드<textarea name="code" id="connect-code" rows="5" required maxlength="16384" placeholder="페어링 코드를 붙여넣으세요"></textarea></label><p class="hint">선택한 서재가 그룹에 가입해 그룹의 모든 기기와 파일을 동기화합니다. 이미 다른 그룹에 속한 서재는 먼저 그룹에서 나가야 합니다.</p><button type="submit" class="primary">그룹 가입</button><p id="connect-notice" role="status"></p></form>
       </section>
       <section id="page-settings" class="page" hidden>
         <header class="page-header"><div><h1>설정</h1></div></header>
@@ -63,6 +63,7 @@
   </div>
   <div id="name-modal" class="backdrop" hidden><form id="name-form" class="modal narrow" role="dialog" aria-modal="true" aria-labelledby="name-title"><header class="modal-header"><h2 id="name-title">서재 만들기</h2></header><label>이름<input id="name-value" required maxlength="200" autocomplete="off"></label><footer class="modal-footer"><button type="button" data-close="name-modal">취소</button><button type="submit" class="primary">저장</button></footer></form></div>
   <div id="confirm-modal" class="backdrop" hidden><div class="modal narrow" role="alertdialog" aria-modal="true" aria-labelledby="confirm-title"><h2 id="confirm-title"></h2><p id="confirm-message"></p><footer class="modal-footer"><button type="button" id="confirm-cancel">취소</button><button type="button" id="confirm-ok" class="danger-solid">연결 해제</button></footer></div></div>
+  <div id="reset-modal" class="backdrop" hidden><div class="modal narrow" role="alertdialog" aria-modal="true" aria-labelledby="reset-title" aria-describedby="reset-message"><h2 id="reset-title">기기 연결이 초기화되었습니다</h2><div id="reset-message"><p>실시간 동기화가 동기화 그룹 방식으로 바뀌어 이전 기기 연결을 한 번 초기화했습니다. 서재와 원본 파일은 그대로 있습니다.</p><p>모든 기기의 Lof Writer와 Lof Library를 최신 버전으로 업데이트한 뒤, 한 기기에서 초대 코드를 만들어 나머지 기기를 같은 그룹에 다시 가입시켜 주세요. 이후 새 기기는 페어링 코드 한 번으로 그룹의 모든 기기와 연결됩니다.</p></div><footer class="modal-footer"><button type="button" id="reset-ok" class="primary">확인</button></footer></div></div>
   <div id="toast" class="toast" role="status" hidden></div>
   <script src="libraries.js"></script><script src="realtime.js"></script><script src="app.js"></script>
 </body></html>

@@ -1,7 +1,7 @@
 const { invoke } = window.__TAURI__.core;
 const $ = id => document.getElementById(id);
 let status = null, page = "overview", busy = false, refreshing = null, toastTimer;
-let nameAction = null, confirmAction = null, previousFocus = null;
+let nameAction = null, confirmAction = null, previousFocus = null, resetShown = false;
 const manage = (action, args = {}) => invoke("realtime_manage", { action, args });
 function toast(message, error = false) {
   $("toast").textContent = String(message); $("toast").classList.toggle("error", error); $("toast").hidden = false;
@@ -24,9 +24,9 @@ function nameDialog(title, value, action) {
   $("name-title").textContent = title; $("name-value").value = value; $("name-modal").hidden = false;
   $("name-value").maxLength = title.includes("기기") ? 100 : 200; $("name-value").focus();
 }
-function confirm(title, message) {
+function confirm(title, message, ok = "연결 해제") {
   return new Promise(resolve => { previousFocus = document.activeElement; confirmAction = resolve;
-    $("confirm-title").textContent = title; $("confirm-message").textContent = message; $("confirm-modal").hidden = false; $("confirm-cancel").focus();
+    $("confirm-title").textContent = title; $("confirm-message").textContent = message; $("confirm-ok").textContent = ok; $("confirm-modal").hidden = false; $("confirm-cancel").focus();
   });
 }
 async function perform(button, action) {
@@ -60,6 +60,10 @@ async function refresh() {
     $("stat-online").textContent = new Set(peers.filter(peer => peer.online && active).map(peer => peer.id)).size;
     for (const button of document.querySelectorAll('[data-action="create-library"]')) button.disabled = !active || busy;
     peerConnections.refresh(status);
+    // 이전 1:1 기기 연결을 초기화했다면 한 번 안내한다.
+    if (peer?.resetNotice && !resetShown) {
+      resetShown = true; previousFocus = document.activeElement; $("reset-modal").hidden = false; $("reset-ok").focus();
+    }
   } catch (error) { toast(String(error), true); }
   })().finally(() => { refreshing = null; });
   return refreshing;
@@ -94,10 +98,11 @@ $("name-form").addEventListener("submit", event => {
 for (const button of document.querySelectorAll("[data-close]")) button.addEventListener("click", () => closeModal(button.dataset.close));
 function finishConfirm(answer) { closeModal("confirm-modal"); const resolve = confirmAction; confirmAction = null; resolve?.(answer); }
 $("confirm-cancel").addEventListener("click", () => finishConfirm(false)); $("confirm-ok").addEventListener("click", () => finishConfirm(true));
+$("reset-ok").addEventListener("click", () => { closeModal("reset-modal"); manage("dismissReset").catch(error => toast(String(error), true)); });
 document.addEventListener("keydown", event => {
   const modal = [...document.querySelectorAll('.backdrop:not([hidden])')].at(-1);
   if (!modal) return;
-  if (event.key === "Escape") { event.preventDefault(); modal.id === "confirm-modal" ? finishConfirm(false) : closeModal(modal.id); }
+  if (event.key === "Escape") { event.preventDefault(); modal.id === "confirm-modal" ? finishConfirm(false) : modal.id === "reset-modal" ? $("reset-ok").click() : closeModal(modal.id); }
   if (event.key === "Tab") { const focus = [...modal.querySelectorAll('button:not(:disabled),input:not(:disabled),textarea:not(:disabled),select:not(:disabled)')]; const index = focus.indexOf(document.activeElement); if (focus.length && (event.shiftKey ? index <= 0 : index === focus.length - 1)) { event.preventDefault(); focus[event.shiftKey ? focus.length - 1 : 0].focus(); } }
 });
 peerConnections.init(); refresh(); refreshUpdate(); setInterval(refresh, 2000); setInterval(refreshUpdate, 3000);

@@ -312,7 +312,15 @@ async fn manage(State(web): State<Web>, headers: HeaderMap, Json(body): Json<Val
     // 동기화 중지처럼 서버 수명에 관한 명령은 웹에서 허용하지 않는다.
     if !matches!(
         action.as_str(),
-        "create" | "rename" | "invite" | "cancelInvite" | "remove" | "renamePeer" | "pair"
+        "create"
+            | "rename"
+            | "invite"
+            | "cancelInvite"
+            | "remove"
+            | "renamePeer"
+            | "pair"
+            | "leave"
+            | "dismissReset"
     ) {
         return fail(StatusCode::BAD_REQUEST, "지원하지 않는 관리 명령입니다.");
     }
