@@ -358,6 +358,7 @@ async function refresh() {
     if (editingDevice === null) renderDevices();
     renderPairingAddresses();
     checkPairingDone();
+    await libraryManager.refresh(status.state === "running");
   } catch (error) {
     failure(error);
   }
@@ -433,6 +434,7 @@ document.addEventListener("click", (event) => {
 document.addEventListener("keydown", (event) => {
   if (event.key !== "Escape") return;
   if (!$("confirm-modal").hidden) $("confirm-cancel").click();
+  else if (libraryManager.closeOnEscape()) return;
   else if (!$("pairing-modal").hidden) document.querySelector('#pairing-modal [data-action="close-pairing"]').click();
 });
 
@@ -504,6 +506,7 @@ $("settings-autostart").addEventListener("change", (event) => {
   run(null, () => saveSettings(enabled ? "PC를 시작하면 자동으로 실행합니다." : "자동 실행을 껐습니다."));
 });
 
+libraryManager.init();
 refresh();
 setInterval(refresh, 3000);
 refreshUpdate().catch(failure);

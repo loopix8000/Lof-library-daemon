@@ -144,7 +144,7 @@ pub fn document_from_row(row: &Row) -> rusqlite::Result<Value> {
     }))
 }
 
-fn library_from_row(row: &Row) -> rusqlite::Result<Value> {
+pub(crate) fn library_from_row(row: &Row) -> rusqlite::Result<Value> {
     let policy: String = row.get("policy")?;
     Ok(json!({
         "id": row.get::<_, String>("id")?,
@@ -201,6 +201,15 @@ impl Store {
         db.query_row("SELECT * FROM libraries WHERE id=?1", [library_id], library_from_row)
             .optional()?
             .ok_or_else(|| not_found("library_not_found", "서재를 찾을 수 없습니다."))
+    }
+
+    fn current_cursor(db: &Connection) -> ApiResult<i64> {
+        // 서재 삭제로 마지막 이벤트가 지워져도 다른 서재의 동기화 위치는 되돌리지 않는다.
+        Ok(db.query_row(
+            "SELECT max(coalesce((SELECT seq FROM sqlite_sequence WHERE name='changes'),0),
+                        coalesce((SELECT max(id) FROM changes),0))",
+            [], |row| row.get(0),
+        )?)
     }
 
     pub fn document_row(db: &Connection, library_id: &str, document_id: &str) -> ApiResult<Option<Value>> {
@@ -293,7 +302,7 @@ impl Store {
                     }))
                 })?
                 .collect::<Result<Vec<_>, _>>()?;
-            let cursor: i64 = db.query_row("SELECT coalesce(max(id),0) FROM changes", [], |row| row.get(0))?;
+            let cursor = Self::current_cursor(db)?;
             Ok(json!({"library": library, "documents": documents, "assets": assets, "cursor": cursor}))
         })
     }
@@ -434,7 +443,7 @@ impl Store {
     pub fn changes(&self, library_id: &str, after: i64, limit: i64) -> ApiResult<Value> {
         self.read(|db| {
             Self::require_library(db, library_id)?;
-            let maximum: i64 = db.query_row("SELECT coalesce(max(id),0) FROM changes", [], |row| row.get(0))?;
+            let maximum = Self::current_cursor(db)?;
             if after > maximum {
                 return Err(ApiError::new(409, "cursor_ahead", "서버의 현재 위치보다 앞선 커서입니다. 서재 목록을 다시 받아 주세요."));
             }

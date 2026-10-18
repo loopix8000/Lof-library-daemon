@@ -2417,7 +2417,7 @@ dependencies = [
 
 [[package]]
 name = "lof-library-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "async-stream",
  "axum",
@@ -2445,7 +2445,7 @@ dependencies = [
 
 [[package]]
 name = "lof-library-desktop"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "if-addrs",
  "lof-library-core",
@@ -2466,7 +2466,7 @@ dependencies = [
 
 [[package]]
 name = "lof-library-server"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "clap",
  "lof-library-core",

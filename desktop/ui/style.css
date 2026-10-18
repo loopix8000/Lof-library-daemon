@@ -338,6 +338,22 @@ h2 { margin: 0 0 6px; font-size: 14px; font-weight: 600; color: var(--strong); }
 
 /* 대화상자 */
 
+.library-list li { align-items: flex-start; flex-wrap: wrap; }
+.library-list .grow { min-width: 180px; }
+.library-list .title { overflow-wrap: anywhere; }
+.library-list .actions { flex-wrap: wrap; }
+.policy-modal { width: 580px; }
+.policy-section { margin: 22px 0; }
+.policy-section h3 { margin: 0 0 10px; font-size: 13px; color: var(--strong); }
+.policy-section .hint { margin: 0 0 12px; }
+.policy-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.policy-fields input { width: 100%; }
+.modal label.policy-check { display: flex; align-items: center; gap: 9px; margin: 12px 0; color: var(--text); }
+.policy-check input { margin: 0; box-shadow: none; }
+.policy-check input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.modal .delete-name-label { margin-top: 20px; }
+.delete-summary { white-space: pre-line; overflow-wrap: anywhere; color: var(--strong); }
+
 .backdrop {
   position: fixed;
   inset: 0;

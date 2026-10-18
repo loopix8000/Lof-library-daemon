@@ -5,6 +5,7 @@ pub mod auth;
 pub mod backup;
 pub mod error;
 pub mod history;
+mod library_admin;
 pub mod models;
 pub mod store;
 

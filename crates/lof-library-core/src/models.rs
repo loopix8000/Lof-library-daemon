@@ -111,13 +111,13 @@ impl Default for HistoryPolicy {
 
 impl Validate for HistoryPolicy {
     fn validate(&self) -> Result<(), String> {
-        range(self.min_minutes, 1, 10080, "min_minutes")?;
-        range(self.min_changed_chars, 1, 1_000_000, "min_changed_chars")?;
+        range(self.min_minutes, 1, 10080, "이력 생성 간격(분)")?;
+        range(self.min_changed_chars, 1, 1_000_000, "변경 글자 수")?;
         if let Some(days) = self.retention_days {
-            range(days, 1, 36500, "retention_days")?;
+            range(days, 1, 36500, "이력 보관 기간(일)")?;
         }
-        range(self.smart.keep_recent_minutes, 1, 525_600, "smart.keep_recent_minutes")?;
-        range(self.smart.bucket_minutes, 1, 525_600, "smart.bucket_minutes")
+        range(self.smart.keep_recent_minutes, 1, 525_600, "최근 이력 전체 보관 시간(분)")?;
+        range(self.smart.bucket_minutes, 1, 525_600, "이력 정리 간격(분)")
     }
 }
 

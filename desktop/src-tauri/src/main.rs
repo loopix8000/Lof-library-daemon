@@ -258,6 +258,31 @@ async fn devices_list(controller: State<'_, Shared>) -> Result<Value, String> {
 }
 
 #[tauri::command]
+async fn libraries_list(controller: State<'_, Shared>) -> Result<Value, String> {
+    controller.state().await?.managed_libraries().await.map_err(text)
+}
+
+#[tauri::command]
+async fn library_create(controller: State<'_, Shared>, name: String) -> Result<Value, String> {
+    controller.state().await?.managed_library_create(name).await.map_err(text)
+}
+
+#[tauri::command]
+async fn library_rename(controller: State<'_, Shared>, id: String, name: String, expected_version: i64) -> Result<Value, String> {
+    controller.state().await?.managed_library_rename(id, name, expected_version).await.map_err(text)
+}
+
+#[tauri::command]
+async fn library_policy(controller: State<'_, Shared>, id: String, request: lof_library_core::models::PolicyUpdate) -> Result<Value, String> {
+    controller.state().await?.managed_library_policy(id, request).await.map_err(text)
+}
+
+#[tauri::command]
+async fn library_delete(controller: State<'_, Shared>, id: String, name: String, expected_revision: String) -> Result<(), String> {
+    controller.state().await?.managed_library_delete(id, name, expected_revision).await.map_err(text)
+}
+
+#[tauri::command]
 async fn device_rename(controller: State<'_, Shared>, id: String, name: String) -> Result<Value, String> {
     if name.trim().chars().count() > 100 {
         return Err("기기 이름은 최대 100자입니다.".into());
@@ -391,6 +416,11 @@ fn main() {
             open_data_dir,
             open_log,
             devices_list,
+            libraries_list,
+            library_create,
+            library_rename,
+            library_policy,
+            library_delete,
             device_rename,
             device_revoke,
             pairing_create,
