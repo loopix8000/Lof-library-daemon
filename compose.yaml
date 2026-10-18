@@ -5,6 +5,9 @@ services:
     restart: unless-stopped
     environment:
       LOF_DATA_DIR: /data
+    ports:
+      # 웹 관리 화면. 같은 PC에서만 쓰려면 "127.0.0.1:8787:8787"로 바꿉니다.
+      - "8787:8787"
     volumes:
       - library-data:/data
     stop_grace_period: 30s

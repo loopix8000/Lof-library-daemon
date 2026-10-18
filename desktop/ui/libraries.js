@@ -2,6 +2,8 @@
 window.libraryViews = (() => {
   const node = (tag, cls, text) => { const value = document.createElement(tag); if (cls) value.className = cls; if (text !== undefined) value.textContent = text; return value; };
   const button = (label, action, danger = false) => { const value = node("button", `small${danger ? " danger-outline" : ""}`, label); value.type = "button"; value.addEventListener("click", () => window.libraryApp.perform(value, action)); return value; };
+  // 웹 관리 화면에서는 숨기는 기능(서버 PC의 폴더 열기 등)이다.
+  const desktopOnly = value => { value.dataset.desktopOnly = ""; return value; };
   let lastLibraries = "", lastPeers = "";
   function render(libraries, online) {
     const app = window.libraryApp;
@@ -13,7 +15,7 @@ window.libraryViews = (() => {
         details.append(node("strong", "title", library.name), node("span", "meta", `${stats.files ?? 0}개 파일 · ${app.bytes(stats.bytes || 0)} · 기기 ${library.peers.length}대${library.syncing ? " · 동기화 중" : ""}`), node("span", "path", library.path));
         if (stats.error) details.append(node("span", "error-text", stats.error));
         const actions = node("div", "actions");
-        actions.append(button("기기 초대", async () => { app.navigate("invite"); document.getElementById("invite-library").value = library.id; }),button("폴더 열기", () => app.invoke("open_library", { id: library.id })),button("이름 변경", async () => { app.nameDialog("서재 이름 변경", library.name, name => app.manage("rename", { id: library.id, name })); }));
+        actions.append(button("기기 초대", async () => { app.navigate("invite"); document.getElementById("invite-library").value = library.id; }),desktopOnly(button("폴더 열기", () => app.invoke("open_library", { id: library.id }))),button("이름 변경", async () => { app.nameDialog("서재 이름 변경", library.name, name => app.manage("rename", { id: library.id, name })); }));
         for (const child of actions.children) child.disabled = !online;
         row.append(details, actions); return row;
       }));

@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Lof Library 로그인</title><link rel="stylesheet" href="style.css">
+<style>
+  body { display: grid; place-items: center; min-height: 100vh; }
+  .login { width: min(360px, calc(100vw - 32px)); display: grid; gap: 14px; }
+  .login h1 { margin: 0; font-size: 20px; }
+  .login label { display: grid; gap: 6px; }
+  .login [hidden] { display: none; }
+  #message { min-height: 1.4em; color: #c0392b; }
+</style></head>
+<body>
+  <main class="login">
+    <h1>Lof Library</h1>
+    <p id="intro" class="hint">확인 중…</p>
+    <form id="form" hidden>
+      <label id="code-field" hidden>최초 설정 코드<input id="code" autocomplete="off" placeholder="XXXX-XXXX"></label>
+      <label>아이디<input id="username" autocomplete="username" required maxlength="64"></label>
+      <label>비밀번호<input id="password" type="password" autocomplete="current-password" required minlength="8" maxlength="256"></label>
+      <label id="confirm-field" hidden>비밀번호 확인<input id="confirm" type="password" autocomplete="new-password" maxlength="256"></label>
+      <button id="submit" type="submit" class="primary">로그인</button>
+      <p id="message" role="alert"></p>
+    </form>
+  </main>
+  <script src="login.js"></script>
+</body></html>

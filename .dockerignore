@@ -5,5 +5,4 @@ data
 target
 **/target
 desktop/node_modules
-desktop/ui
 desktop/src-tauri/gen

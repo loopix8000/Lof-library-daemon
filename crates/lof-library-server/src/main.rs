@@ -2,6 +2,7 @@ use clap::{Parser, Subcommand};
 use lof_library_core::{control, Config, Daemon};
 use serde_json::{json, Value};
 use std::{path::PathBuf, process::ExitCode};
+mod web;
 #[derive(Parser)]
 #[command(
     name = "lof-library-server",
@@ -11,6 +12,9 @@ use std::{path::PathBuf, process::ExitCode};
 struct Cli {
     #[arg(long, env = "LOF_DATA_DIR", default_value = "data", global = true)]
     data_dir: PathBuf,
+    /// 웹 관리 화면을 열 주소(예: 0.0.0.0:8787). 생략하면 웹 관리 화면을 켜지 않는다.
+    #[arg(long, env = "LOF_WEB_ADDR", global = true)]
+    web_addr: Option<String>,
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -47,6 +51,8 @@ enum Command {
         peer_id: String,
     },
     Stop,
+    /// 웹 관리 화면의 관리자 계정을 지운다. 서버를 다시 시작하면 새 최초 설정 코드가 나온다.
+    WebReset,
     /// 로컬 관리 통신으로 실행 상태를 확인한다.
     Healthcheck,
     /// 중지된 피어의 원본·이력·관리 DB를 새 폴더에 백업한다.
@@ -138,6 +144,14 @@ async fn main() -> ExitCode {
                     peer_id,
                 } => manage(&cli, "remove", json!({"vault":library_id,"peer":peer_id}))?,
                 Command::Stop => manage(&cli, "stop", json!({}))?,
+                Command::WebReset => {
+                    match std::fs::remove_file(web::auth_path(&cli.data_dir)) {
+                        Ok(()) => {}
+                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                        Err(e) => return Err(e.to_string()),
+                    }
+                    json!("웹 관리자 계정을 지웠습니다. 서버를 다시 시작하면 새 최초 설정 코드가 표시됩니다.")
+                }
                 Command::Healthcheck => {
                     let state = manage(&cli, "status", json!({}))?;
                     if state["ready"] != true
@@ -160,7 +174,30 @@ async fn main() -> ExitCode {
         })()
     } else {
         match Daemon::start(Config::new(&cli.data_dir)) {
-            Ok(daemon) => daemon.serve(shutdown()).await.map_err(|e| e.to_string()),
+            Ok(daemon) => {
+                let web = match &cli.web_addr {
+                    Some(address) => match tokio::net::TcpListener::bind(address).await {
+                        Ok(listener) => {
+                            tracing::info!("웹 관리 화면: http://{address}");
+                            Some(tokio::spawn(web::serve(
+                                listener,
+                                daemon.state(),
+                                web::auth_path(&cli.data_dir),
+                            )))
+                        }
+                        Err(error) => {
+                            eprintln!("웹 관리 화면 주소({address})를 열지 못했습니다: {error}");
+                            return ExitCode::FAILURE;
+                        }
+                    },
+                    None => None,
+                };
+                let result = daemon.serve(shutdown()).await.map_err(|e| e.to_string());
+                if let Some(web) = web {
+                    let _ = web.await;
+                }
+                result
+            }
             Err(e) => Err(e.to_string()),
         }
     };

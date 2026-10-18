@@ -17,7 +17,7 @@
       <div class="brand"><strong>Lof Library</strong><span>실시간 동기화</span></div>
       <div class="server-card">
         <div class="server-state"><span id="state-dot" class="dot"></span><span id="state-label">확인 중</span></div>
-        <div class="server-actions"><button id="toggle-server" class="small" type="button">시작</button><button id="restart" class="small ghost" type="button" hidden>다시 시작</button></div>
+        <div class="server-actions" data-desktop-only><button id="toggle-server" class="small" type="button">시작</button><button id="restart" class="small ghost" type="button" hidden>다시 시작</button></div>
       </div>
       <nav class="nav" aria-label="관리 메뉴">
         <button type="button" data-page="overview" aria-pressed="true"><svg><use href="#i-home"/></svg>개요</button>
@@ -30,7 +30,7 @@
       <p id="version" class="version"></p>
     </aside>
     <main class="content">
-      <div id="error-callout" class="callout danger" role="alert" hidden><svg><use href="#i-alert"/></svg><div><strong>동기화를 시작하지 못했습니다</strong><p id="error-message"></p><button type="button" class="small" data-action="open-log">로그 열기</button></div></div>
+      <div id="error-callout" class="callout danger" role="alert" hidden><svg><use href="#i-alert"/></svg><div><strong>동기화를 시작하지 못했습니다</strong><p id="error-message"></p><button type="button" class="small" data-action="open-log" data-desktop-only>로그 열기</button></div></div>
       <section id="page-overview" class="page">
         <header class="page-header"><div><h1>실시간 동기화</h1></div><button type="button" class="primary" data-go="connect">다른 기기 연결</button></header>
         <section class="section"><h2>동기화 현황</h2><dl class="stats"><div><dt>서재</dt><dd id="stat-libraries">-</dd></div><div><dt>원본 파일</dt><dd id="stat-files">-</dd></div><div><dt>연결된 기기</dt><dd id="stat-online">-</dd></div><div><dt>원본 용량</dt><dd id="stat-storage">-</dd></div></dl></section>
@@ -55,9 +55,9 @@
       </section>
       <section id="page-settings" class="page" hidden>
         <header class="page-header"><div><h1>설정</h1></div></header>
-        <section class="section"><h2>실행</h2><div class="rows"><label class="row toggle"><span><b>PC 시작 시 자동 실행</b><small>알림 영역에서 동기화를 시작합니다.</small></span><input id="settings-autostart" type="checkbox"></label></div></section>
-        <section class="section"><h2>업데이트</h2><div class="rows"><div class="row"><span><b id="update-version">버전 확인 중</b><small id="update-message" role="status"></small></span><div class="actions"><button id="update-check" type="button" class="small">업데이트 확인</button><button id="update-install" type="button" class="small primary" hidden>설치하고 다시 시작</button></div></div></div></section>
-        <section class="section"><h2>데이터</h2><div class="rows"><div class="row"><span><b>데이터 폴더</b><small id="data-dir" class="path"></small></span><button type="button" class="small" data-action="open-data">열기</button></div><div class="row"><span><b>동기화 로그</b><small>연결 오류와 실행 기록을 확인합니다.</small></span><button type="button" class="small" data-action="open-log">열기</button></div></div></section>
+        <section class="section" data-desktop-only><h2>실행</h2><div class="rows"><label class="row toggle"><span><b>PC 시작 시 자동 실행</b><small>알림 영역에서 동기화를 시작합니다.</small></span><input id="settings-autostart" type="checkbox"></label></div></section>
+        <section class="section" data-desktop-only><h2>업데이트</h2><div class="rows"><div class="row"><span><b id="update-version">버전 확인 중</b><small id="update-message" role="status"></small></span><div class="actions"><button id="update-check" type="button" class="small">업데이트 확인</button><button id="update-install" type="button" class="small primary" hidden>설치하고 다시 시작</button></div></div></div></section>
+        <section class="section"><h2>데이터</h2><div class="rows"><div class="row"><span><b>데이터 폴더</b><small id="data-dir" class="path"></small></span><button type="button" class="small" data-action="open-data" data-desktop-only>열기</button></div><div class="row" data-desktop-only><span><b>동기화 로그</b><small>연결 오류와 실행 기록을 확인합니다.</small></span><button type="button" class="small" data-action="open-log">열기</button></div></div></section>
       </section>
     </main>
   </div>

@@ -4,6 +4,7 @@ WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
 COPY desktop/src-tauri ./desktop/src-tauri
+COPY desktop/ui ./desktop/ui
 RUN cargo build --release --locked -p lof-library-server \
     && mkdir -p /out/data \
     && cp target/release/lof-library-server /out/
@@ -11,6 +12,8 @@ RUN cargo build --release --locked -p lof-library-server \
 FROM debian:bookworm-slim
 
 ENV LOF_DATA_DIR=/data
+ENV LOF_WEB_ADDR=0.0.0.0:8787
+EXPOSE 8787
 
 RUN groupadd --gid 10001 lof \
     && useradd --uid 10001 --gid lof --no-create-home lof
