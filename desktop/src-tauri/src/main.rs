@@ -3,12 +3,12 @@
 mod controller;
 
 use std::fs::OpenOptions;
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv4Addr};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use controller::{Controller, Settings};
-use lof_library_core::auth::Principal;
 use lof_library_core::error::ApiError;
 use serde::Serialize;
 use serde_json::Value;
@@ -54,25 +54,98 @@ fn init_logging(base: &Path) {
     }
 }
 
-/// 다른 기기가 접속할 때 사용할 수 있는 주소 목록. 이 PC 주소를 마지막에 둔다.
-fn addresses(settings: &Settings) -> Vec<String> {
-    let mut list = Vec::new();
+const PUBLIC_IP_SERVICES: [&str; 2] = ["https://api.ipify.org", "https://ipv4.icanhazip.com"];
+const PUBLIC_IP_TTL: Duration = Duration::from_secs(30 * 60);
+const PUBLIC_IP_RETRY: Duration = Duration::from_secs(60);
+
+#[derive(Serialize)]
+struct Address {
+    url: String,
+    kind: &'static str,
+}
+
+fn kind_of(ip: Ipv4Addr) -> Option<&'static str> {
+    let [first, second, ..] = ip.octets();
+    if ip.is_loopback() || ip.is_link_local() || ip.is_unspecified() {
+        None
+    } else if ip.is_private() {
+        Some("lan")
+    } else if first == 100 && (64..128).contains(&second) {
+        // 100.64.0.0/10은 Tailscale 같은 VPN이 사용하는 주소 범위다.
+        Some("vpn")
+    } else {
+        Some("public")
+    }
+}
+
+/// 다른 기기가 접속할 때 사용할 수 있는 주소 목록. 같은 네트워크·VPN·인터넷·이 PC 순서로 둔다.
+fn addresses(settings: &Settings, public: Option<Ipv4Addr>) -> Vec<Address> {
+    let mut found = Vec::new();
     if settings.allow_lan {
         for interface in if_addrs::get_if_addrs().unwrap_or_default() {
-            if interface.is_loopback() {
-                continue;
-            }
             if let IpAddr::V4(ip) = interface.ip() {
-                if !ip.is_link_local() {
-                    list.push(format!("http://{ip}:{}", settings.port));
+                if let Some(kind) = kind_of(ip) {
+                    found.push((kind, ip));
                 }
             }
         }
-        list.sort();
-        list.dedup();
+        if let Some(ip) = public {
+            found.push(("public", ip));
+        }
     }
-    list.push(format!("http://127.0.0.1:{}", settings.port));
+    let rank = |kind: &str| ["lan", "vpn", "public"].iter().position(|item| *item == kind).unwrap_or(3);
+    found.sort_by_key(|(kind, ip)| (rank(kind), *ip));
+    found.dedup_by_key(|(_, ip)| *ip);
+    let mut list: Vec<Address> = found
+        .into_iter()
+        .map(|(kind, ip)| Address { url: format!("http://{ip}:{}", settings.port), kind })
+        .collect();
+    list.push(Address { url: format!("http://127.0.0.1:{}", settings.port), kind: "local" });
     list
+}
+
+/// 외부에서 접속할 공인 IP. 공유기 안쪽에서는 외부 서비스에 물어봐야 알 수 있다.
+#[derive(Default)]
+struct PublicIp {
+    value: Option<Ipv4Addr>,
+    checked: Option<Instant>,
+    checking: bool,
+}
+
+type SharedIp = Arc<Mutex<PublicIp>>;
+
+async fn fetch_public_ip() -> Option<Ipv4Addr> {
+    let client = reqwest::Client::builder().timeout(Duration::from_secs(5)).build().ok()?;
+    for service in PUBLIC_IP_SERVICES {
+        let Ok(response) = client.get(service).send().await else { continue };
+        let Ok(text) = response.text().await else { continue };
+        if let Ok(ip) = text.trim().parse::<Ipv4Addr>() {
+            if kind_of(ip) == Some("public") {
+                return Some(ip);
+            }
+        }
+    }
+    None
+}
+
+/// 저장한 공인 IP가 오래됐으면 백그라운드에서 다시 확인한다.
+fn ensure_public_ip(public: &SharedIp, force: bool) {
+    {
+        let mut state = public.lock().unwrap_or_else(|error| error.into_inner());
+        let wait = if state.value.is_some() { PUBLIC_IP_TTL } else { PUBLIC_IP_RETRY };
+        if state.checking || (!force && state.checked.is_some_and(|checked| checked.elapsed() < wait)) {
+            return;
+        }
+        state.checking = true;
+    }
+    let public = public.clone();
+    tauri::async_runtime::spawn(async move {
+        let value = fetch_public_ip().await;
+        let mut state = public.lock().unwrap_or_else(|error| error.into_inner());
+        state.value = value;
+        state.checked = Some(Instant::now());
+        state.checking = false;
+    });
 }
 
 #[derive(Serialize)]
@@ -80,18 +153,37 @@ struct Status {
     state: &'static str,
     message: Option<String>,
     settings: Settings,
-    addresses: Vec<String>,
+    addresses: Vec<Address>,
+    /// 공인 IP 확인 상태: checking, ok, unavailable. 다른 기기 접속을 막았으면 없음.
+    public_ip: Option<&'static str>,
     autostart: bool,
     server: Option<Value>,
     data_dir: String,
 }
 
 #[tauri::command]
-async fn server_status(app: AppHandle, controller: State<'_, Shared>) -> Result<Status, String> {
+fn public_ip_refresh(public: State<'_, SharedIp>) {
+    ensure_public_ip(&public, true);
+}
+
+#[tauri::command]
+async fn server_status(app: AppHandle, controller: State<'_, Shared>, public: State<'_, SharedIp>) -> Result<Status, String> {
     let snapshot = controller.snapshot().await;
     let server = match &snapshot.state {
         Some(state) => state.server_info().await.ok(),
         None => None,
+    };
+    let (public_ip, public_state) = if snapshot.settings.allow_lan {
+        ensure_public_ip(&public, false);
+        let state = public.lock().unwrap_or_else(|error| error.into_inner());
+        let label = match (state.value, state.checking || state.checked.is_none()) {
+            (Some(_), _) => "ok",
+            (None, true) => "checking",
+            (None, false) => "unavailable",
+        };
+        (state.value, Some(label))
+    } else {
+        (None, None)
     };
     Ok(Status {
         state: match (&snapshot.state, &snapshot.error) {
@@ -100,7 +192,8 @@ async fn server_status(app: AppHandle, controller: State<'_, Shared>) -> Result<
             (None, None) => "stopped",
         },
         message: snapshot.error,
-        addresses: addresses(&snapshot.settings),
+        addresses: addresses(&snapshot.settings, public_ip),
+        public_ip: public_state,
         settings: snapshot.settings,
         autostart: app.autolaunch().is_enabled().unwrap_or(false),
         server,
@@ -159,23 +252,6 @@ fn open_log(app: AppHandle, controller: State<'_, Shared>) -> Result<(), String>
 }
 
 #[tauri::command]
-async fn admin_setup(controller: State<'_, Shared>, password: String) -> Result<(), String> {
-    let state = controller.state().await?;
-    state.setup(Some(Principal::local()), None, password, "local").await.map_err(text)?;
-    Ok(())
-}
-
-#[tauri::command]
-async fn admin_password(controller: State<'_, Shared>, password: String) -> Result<(), String> {
-    if !(8..=256).contains(&password.chars().count()) {
-        return Err("새 비밀번호는 8~256자로 입력해 주세요.".into());
-    }
-    let state = controller.state().await?;
-    state.change_password(Principal::local(), None, password, "local").await.map_err(text)?;
-    Ok(())
-}
-
-#[tauri::command]
 async fn devices_list(controller: State<'_, Shared>) -> Result<Value, String> {
     controller.state().await?.devices().await.map_err(text)
 }
@@ -197,20 +273,16 @@ async fn device_revoke(controller: State<'_, Shared>, id: String) -> Result<(), 
 async fn pairing_create(
     controller: State<'_, Shared>,
     name: String,
-    role: String,
     server_url: String,
 ) -> Result<Value, String> {
     if name.chars().count() > 100 {
         return Err("기기 이름은 최대 100자입니다.".into());
     }
-    if !["device", "admin"].contains(&role.as_str()) {
-        return Err("권한을 다시 선택해 주세요.".into());
-    }
     if !lof_library_core::models::valid_server_url(&server_url) {
         return Err("접속 주소를 다시 선택해 주세요.".into());
     }
     let state = controller.state().await?;
-    let mut entry = state.create_pairing(Principal::local(), name, role, server_url).await.map_err(text)?;
+    let mut entry = state.create_pairing(name, server_url).await.map_err(text)?;
     let connection = entry["connection"].as_str().unwrap_or_default().to_string();
     let code = qrcode::QrCode::new(connection.as_bytes()).map_err(|error| format!("QR을 만들지 못했습니다: {error}"))?;
     let svg = code
@@ -278,6 +350,7 @@ fn main() {
             init_logging(&base);
             let controller: Shared = Arc::new(Controller::new(base));
             app.manage(controller.clone());
+            app.manage::<SharedIp>(Arc::default());
             build_tray(app)?;
             tauri::async_runtime::spawn(async move {
                 let _ = controller.start().await;
@@ -297,14 +370,13 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             server_status,
+            public_ip_refresh,
             server_start,
             server_stop,
             server_restart,
             settings_save,
             open_data_dir,
             open_log,
-            admin_setup,
-            admin_password,
             devices_list,
             device_rename,
             device_revoke,

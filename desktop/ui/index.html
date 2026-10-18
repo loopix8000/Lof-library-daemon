@@ -7,104 +7,202 @@
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <header class="topbar">
-    <div class="brand">
-      <h1>Lof Library</h1>
-      <span id="status-pill" class="pill">확인 중</span>
-    </div>
-    <div class="actions">
-      <button id="start" type="button">시작</button>
-      <button id="restart" type="button" class="secondary">다시 시작</button>
-      <button id="stop" type="button" class="secondary">중지</button>
-    </div>
-  </header>
+  <svg width="0" height="0" class="sprite" aria-hidden="true">
+    <symbol id="i-home" viewBox="0 0 24 24"><path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V21h14V9.5"/></symbol>
+    <symbol id="i-devices" viewBox="0 0 24 24"><rect x="2" y="4" width="14" height="10" rx="1.5"/><path d="M6 18h6"/><rect x="17" y="8" width="5" height="12" rx="1.5"/></symbol>
+    <symbol id="i-settings" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></symbol>
+    <symbol id="i-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-close" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></symbol>
+    <symbol id="i-alert" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 8v4M12 16h.01"/></symbol>
+  </svg>
 
-  <main>
-    <p id="error" class="banner error" hidden></p>
+  <div class="app">
+    <aside class="sidebar">
+      <div class="brand">
+        <strong>Lof Library</strong>
+        <span>서재 동기화 서버</span>
+      </div>
 
-    <section class="card">
-      <h2>서버 상태</h2>
-      <dl class="facts">
-        <div><dt>서버 이름</dt><dd id="fact-name">-</dd></div>
-        <div><dt>버전</dt><dd id="fact-version">-</dd></div>
-        <div><dt>가동 시간</dt><dd id="fact-uptime">-</dd></div>
-        <div><dt>저장 공간</dt><dd id="fact-storage">-</dd></div>
-        <div><dt>서재 · 문서</dt><dd id="fact-counts">-</dd></div>
-        <div><dt>실시간 연결</dt><dd id="fact-online">-</dd></div>
-      </dl>
-      <h3>접속 주소</h3>
-      <ul id="addresses" class="addresses"></ul>
-      <p class="hint">다른 기기에서는 같은 네트워크의 주소를 사용합니다. 처음 실행할 때 Windows 방화벽에서 접근을 허용해 주세요.</p>
-    </section>
+      <div class="server-card">
+        <div class="server-state">
+          <span id="state-dot" class="dot"></span>
+          <span id="state-label">확인 중</span>
+        </div>
+        <p id="state-detail" class="server-detail"></p>
+        <div class="server-actions">
+          <button id="toggle-server" type="button" class="small">시작</button>
+          <button id="restart" type="button" class="small ghost" hidden>다시 시작</button>
+        </div>
+      </div>
 
-    <section id="setup" class="card" hidden>
-      <h2>관리자 비밀번호 설정</h2>
-      <p class="hint">다른 PC나 휴대폰 브라우저에서 관리 화면에 로그인할 때 사용합니다.</p>
-      <form id="setup-form" class="stack">
-        <label>비밀번호<input id="setup-password" type="password" minlength="8" maxlength="256" autocomplete="new-password" required></label>
-        <label>비밀번호 확인<input id="setup-confirm" type="password" minlength="8" maxlength="256" autocomplete="new-password" required></label>
-        <button type="submit">설정</button>
-      </form>
-    </section>
+      <nav class="nav" aria-label="관리 메뉴">
+        <button type="button" data-page="overview" aria-pressed="true"><svg><use href="#i-home"/></svg>개요</button>
+        <button type="button" data-page="devices" aria-pressed="false"><svg><use href="#i-devices"/></svg>연결 기기<span id="device-count" class="count" hidden></span></button>
+        <button type="button" data-page="settings" aria-pressed="false"><svg><use href="#i-settings"/></svg>설정</button>
+      </nav>
 
-    <section class="card">
-      <h2>기기 추가</h2>
-      <p class="hint">연결 코드는 10분 동안 한 번만 사용할 수 있습니다. Lof Writer의 서버 연결 화면에 연결 정보를 붙여넣거나 QR을 읽어 주세요.</p>
-      <form id="pairing-form" class="grid">
-        <label>기기 이름<input id="pairing-name" maxlength="100" placeholder="예: 노트북"></label>
-        <label>권한
-          <select id="pairing-role">
-            <option value="device">일반 기기</option>
-            <option value="admin">관리자 기기</option>
-          </select>
-        </label>
-        <label class="wide">접속 주소<select id="pairing-url"></select></label>
-        <button type="submit" class="wide">연결 코드 발급</button>
-      </form>
-      <div id="pairing-result" class="pairing" hidden>
-        <div class="pairing-text">
-          <p class="code" id="pairing-code"></p>
-          <p class="hint" id="pairing-expiry"></p>
-          <label>연결 정보<textarea id="pairing-connection" rows="3" readonly></textarea></label>
-          <div class="row">
-            <button id="pairing-copy" type="button">연결 정보 복사</button>
-            <button id="pairing-cancel" type="button" class="secondary">코드 취소</button>
+      <p id="version" class="version"></p>
+    </aside>
+
+    <main class="content">
+      <section id="page-overview" class="page">
+        <header class="page-header">
+          <div>
+            <h1>개요</h1>
+            <p class="description">Lof Writer가 이 PC의 서버로 원고를 동기화합니다.</p>
+          </div>
+          <button type="button" class="primary" data-action="add-device"><svg><use href="#i-plus"/></svg>기기 추가</button>
+        </header>
+
+        <div id="error-callout" class="callout danger" hidden>
+          <svg><use href="#i-alert"/></svg>
+          <div>
+            <strong>서버를 실행하지 못했습니다</strong>
+            <p id="error-message"></p>
+            <button type="button" class="small" data-action="open-log">로그 열기</button>
           </div>
         </div>
-        <div id="pairing-qr" class="qr" aria-label="연결 정보 QR"></div>
-      </div>
-    </section>
 
-    <section class="card">
-      <h2>연결 기기</h2>
-      <p id="devices-empty" class="hint">아직 연결한 기기가 없습니다.</p>
-      <ul id="devices" class="devices"></ul>
-    </section>
+        <section class="section">
+          <h2>접속 주소</h2>
+          <p class="description">Lof Writer에서 서버를 연결할 때 사용합니다. 다른 기기는 같은 네트워크의 주소로 접속합니다.</p>
+          <ul id="addresses" class="list"></ul>
+        </section>
 
-    <section class="card">
-      <h2>설정</h2>
-      <form id="settings-form" class="stack">
-        <label>포트<input id="settings-port" type="number" min="1024" max="65535" required></label>
-        <label class="check"><input id="settings-lan" type="checkbox"> 다른 기기에서 접속 허용</label>
-        <label class="check"><input id="settings-autostart" type="checkbox"> PC 시작 시 자동 실행</label>
-        <div class="row">
-          <button type="submit">저장</button>
-          <span class="hint">포트나 접속 허용을 바꾸면 서버를 다시 시작합니다.</span>
+        <section class="section">
+          <h2>현황</h2>
+          <dl class="stats">
+            <div><dt>서재</dt><dd id="stat-libraries">-</dd></div>
+            <div><dt>문서</dt><dd id="stat-documents">-</dd></div>
+            <div><dt>실시간 연결</dt><dd id="stat-online">-</dd></div>
+            <div><dt>저장 공간</dt><dd id="stat-storage">-</dd></div>
+          </dl>
+        </section>
+      </section>
+
+      <section id="page-devices" class="page" hidden>
+        <header class="page-header">
+          <div>
+            <h1>연결 기기</h1>
+            <p class="description">연결 코드로 등록한 기기입니다. 연결을 해제하면 해당 기기는 즉시 동기화할 수 없습니다.</p>
+          </div>
+          <button type="button" class="primary" data-action="add-device"><svg><use href="#i-plus"/></svg>기기 추가</button>
+        </header>
+        <ul id="devices" class="list"></ul>
+        <div id="devices-empty" class="empty" hidden>
+          <strong>아직 연결한 기기가 없습니다</strong>
+          <p>기기 추가에서 연결 코드를 발급한 뒤 Lof Writer의 서버 연결 화면에 입력해 주세요.</p>
         </div>
+      </section>
+
+      <section id="page-settings" class="page" hidden>
+        <header class="page-header">
+          <div>
+            <h1>설정</h1>
+            <p class="description">네트워크와 실행 방식을 바꿉니다.</p>
+          </div>
+        </header>
+
+        <section class="section">
+          <h2>네트워크</h2>
+          <div class="rows">
+            <div class="row">
+              <span><b>포트</b><small>바꾸면 서버를 다시 시작합니다. 연결된 기기의 서버 주소도 함께 바꿔야 합니다.</small></span>
+              <form id="port-form" class="port-form">
+                <input id="settings-port" type="number" min="1024" max="65535" required>
+                <button id="port-apply" type="submit" class="small" disabled>적용</button>
+              </form>
+            </div>
+            <label class="row toggle">
+              <span><b>다른 기기에서 접속 허용</b><small>끄면 이 PC의 Lof Writer만 연결할 수 있습니다.</small></span>
+              <input id="settings-lan" type="checkbox">
+            </label>
+          </div>
+        </section>
+
+        <section class="section">
+          <h2>실행</h2>
+          <div class="rows">
+            <label class="row toggle">
+              <span><b>PC 시작 시 자동 실행</b><small>창 없이 알림 영역에서 서버를 시작합니다.</small></span>
+              <input id="settings-autostart" type="checkbox">
+            </label>
+          </div>
+        </section>
+
+        <section class="section">
+          <h2>데이터</h2>
+          <div class="rows">
+            <div class="row">
+              <span><b>데이터 폴더</b><small id="data-dir" class="path"></small></span>
+              <button type="button" class="small" data-action="open-data">열기</button>
+            </div>
+            <div class="row">
+              <span><b>서버 로그</b><small>문제가 생겼을 때 원인을 확인합니다.</small></span>
+              <button type="button" class="small" data-action="open-log">열기</button>
+            </div>
+          </div>
+        </section>
+      </section>
+    </main>
+  </div>
+
+  <div id="pairing-modal" class="backdrop" hidden>
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="pairing-title">
+      <header class="modal-header">
+        <h2 id="pairing-title">기기 추가</h2>
+        <button type="button" class="icon" data-action="close-pairing" aria-label="닫기"><svg><use href="#i-close"/></svg></button>
+      </header>
+
+      <form id="pairing-form">
+        <label>기기 이름<input id="pairing-name" maxlength="100" placeholder="예: 작업용 노트북"></label>
+        <label>접속 주소<select id="pairing-url"></select></label>
+        <p id="pairing-local-hint" class="hint" hidden>다른 기기에서 접속하려면 설정에서 ‘다른 기기에서 접속 허용’을 켜 주세요.</p>
+        <footer class="modal-footer">
+          <button type="button" data-action="close-pairing">취소</button>
+          <button type="submit" class="primary">연결 코드 발급</button>
+        </footer>
       </form>
-      <div class="row spaced">
-        <button id="open-data" type="button" class="secondary">데이터 폴더 열기</button>
-        <button id="open-log" type="button" class="secondary">로그 열기</button>
+
+      <div id="pairing-result" hidden>
+        <div class="pairing">
+          <div id="pairing-qr" class="qr" aria-label="연결 정보 QR"></div>
+          <div class="pairing-text">
+            <p class="hint">Lof Writer의 서버 연결 화면에서 QR을 읽거나 아래 코드를 입력해 주세요.</p>
+            <p id="pairing-code" class="code"></p>
+            <p id="pairing-expiry" class="expiry"></p>
+            <button id="pairing-copy" type="button" class="small"><svg><use href="#i-copy"/></svg>연결 정보 복사</button>
+          </div>
+        </div>
+        <footer class="modal-footer">
+          <button type="button" class="danger-outline" data-action="cancel-pairing">코드 취소</button>
+          <button type="button" class="primary" data-action="close-pairing">닫기</button>
+        </footer>
       </div>
-      <p class="hint" id="data-dir"></p>
-      <form id="password-form" class="stack" hidden>
-        <h3>관리자 비밀번호 변경</h3>
-        <label>새 비밀번호<input id="password-new" type="password" minlength="8" maxlength="256" autocomplete="new-password" required></label>
-        <button type="submit" class="secondary">변경</button>
-        <p class="hint">변경하면 브라우저의 관리 화면 로그인이 모두 끝납니다.</p>
-      </form>
-    </section>
-  </main>
+
+      <div id="pairing-done" class="done" hidden>
+        <span class="done-icon"><svg><use href="#i-check"/></svg></span>
+        <strong id="pairing-done-title"></strong>
+        <p>이제 이 기기에서 원고를 동기화할 수 있습니다.</p>
+        <footer class="modal-footer">
+          <button type="button" class="primary" data-action="close-pairing">확인</button>
+        </footer>
+      </div>
+    </div>
+  </div>
+
+  <div id="confirm-modal" class="backdrop" hidden>
+    <div class="modal narrow" role="alertdialog" aria-modal="true" aria-labelledby="confirm-title">
+      <h2 id="confirm-title"></h2>
+      <p id="confirm-message"></p>
+      <footer class="modal-footer">
+        <button type="button" id="confirm-cancel">취소</button>
+        <button type="button" id="confirm-ok" class="danger-solid"></button>
+      </footer>
+    </div>
+  </div>
 
   <div id="toast" class="toast" role="status" hidden></div>
   <script src="app.js"></script>

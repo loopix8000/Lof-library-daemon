@@ -1,7 +1,7 @@
 # API v1
 
 `/status`, `/healthz`와 아래 인증 API를 제외한 `/v1` 요청은 `Authorization: Bearer <인증 키>` 헤더가 필요합니다.
-인증 키는 기기 인증 키(`lofd_…`)나 관리자 로그인 키(`lofs_…`)입니다. `/v1/admin` API는 관리자 권한이 필요합니다.
+인증 키는 기기 인증 키(`lofd_…`)나 웹 관리자 로그인 키(`lofs_…`)입니다. 기기 인증 키로는 동기화만 할 수 있고, `/v1/admin` API는 웹 관리자 로그인 키가 필요합니다.
 요청은 최대 8 MiB이고, 본문은 최대 100만 Unicode 글자입니다. 시간 값은 UTC Unix 초입니다.
 서재·문서·기기·요청 ID에는 영문, 숫자, `_`, `-`를 사용하며 최대 128자입니다.
 오류 응답은 `{"error":"코드","message":"안내 문구"}` 형식입니다. 요청 값이 규칙에 맞지 않으면 `422 invalid_request`입니다.
@@ -10,20 +10,22 @@
 
 | 요청 | 인증 | 설명 |
 | --- | --- | --- |
-| `POST /v1/setup` | 없음 | `{"code":"ABCD-EFGH","password":"…"}`로 최초 관리자 설정. 로그인 키 반환 |
-| `POST /v1/auth/login` | 없음 | `{"password":"…"}`로 관리자 로그인. 12시간 유효한 로그인 키 반환 |
-| `POST /v1/auth/logout` | 로그인 키 | 현재 로그인 종료 |
 | `POST /v1/pair` | 없음 | `{"code":"ABCD-EFGH","name":"노트북","platform":"windows"}`로 기기 등록 |
-| `GET /v1/me` | 모든 키 | 현재 키의 종류·권한·기기 ID와 서버 정보 |
+| `GET /v1/me` | 모든 키 | 현재 키의 종류(`device`·`session`)·기기 ID와 서버 정보 |
+| `POST /v1/setup` | 없음 | 웹 관리 전용. `{"code":"ABCD-EFGH","username":"admin","password":"…"}`로 관리자 계정 생성. 로그인 키 반환 |
+| `POST /v1/auth/login` | 없음 | 웹 관리 전용. `{"username":"admin","password":"…"}`로 로그인. 12시간 유효한 로그인 키 반환 |
+| `POST /v1/auth/logout` | 로그인 키 | 현재 로그인 종료 |
 
-최초 설정 코드는 관리자가 없을 때 서버 시작 로그에 표시됩니다. 설정 후에는 다시 쓸 수 없습니다.
-비밀번호는 8~256자입니다. 코드·비밀번호를 10분 동안 10번 틀리면 `429 too_many_attempts`를 반환합니다.
+웹 관리(`/v1/setup`, `/v1/auth/login`, `/v1/admin`)는 Docker 서버에서만 열립니다. 설치형 앱은 로그인 없이 앱 안에서 관리하므로 이 API가 없고 `404`를 반환합니다.
+최초 설정 코드는 관리자 계정이 없을 때 Docker 서버 시작 로그에 표시되며, 계정을 만든 뒤에는 다시 쓸 수 없습니다.
+아이디는 영문·숫자·`_`·`-`·`.`로 3~32자, 비밀번호는 8~256자입니다. 아이디나 비밀번호가 틀리면 어느 쪽인지 구분하지 않고 `401 invalid_credentials`를 반환합니다.
+코드·비밀번호를 10분 동안 10번 틀리면 `429 too_many_attempts`를 반환합니다.
 
 `POST /v1/pair`의 응답:
 
 ```json
 {
-  "device": {"id":"…","name":"노트북","role":"device","platform":"windows","created_at":1790000000.0,"last_seen_at":1790000000.0},
+  "device": {"id":"…","name":"노트북","platform":"windows","created_at":1790000000.0,"last_seen_at":1790000000.0},
   "token": "lofd_…",
   "server": {"id":"…","name":"NAS","version":"0.1.0"}
 }
@@ -34,21 +36,23 @@
 
 연결 정보는 `lof-library://connect?server=<URL 인코딩한 서버 주소>&code=<연결 코드>` 형식입니다. QR에도 같은 문자열을 넣습니다.
 
-## 관리
+## 웹 관리
+
+Docker 서버에서 웹 관리자로 로그인한 키로만 사용합니다.
 
 | 요청 | 설명 |
 | --- | --- |
-| `GET /v1/admin/server` | 서버 ID·이름·버전, 가동 시간, 저장 공간, 서재·문서·기기 수, 실시간 연결 수 |
+| `GET /v1/admin/server` | 서버 ID·이름·버전, 관리자 아이디, 가동 시간, 저장 공간, 서재·문서·기기 수, 실시간 연결 수 |
 | `PUT /v1/admin/password` | `{"current_password":"…","new_password":"…"}`. 모든 로그인을 끝내고 새 로그인 키 반환 |
 | `GET /v1/admin/devices` | 연결 기기 목록과 실시간 연결 여부(`connected`), 마지막 접속 시각 |
 | `PATCH /v1/admin/devices/{기기}` | `{"name":"새 이름"}` |
 | `DELETE /v1/admin/devices/{기기}` | 연결 해제. 해당 기기의 키와 실시간 수신이 즉시 끊깁니다 |
-| `POST /v1/admin/pairing-codes` | `{"name":"노트북","role":"device","server_url":"http://192.168.0.2:8787"}`로 연결 코드 발급 |
+| `POST /v1/admin/pairing-codes` | `{"name":"노트북","server_url":"http://192.168.0.2:8787"}`로 연결 코드 발급 |
 | `GET /v1/admin/pairing-codes` | 사용 전이고 만료되지 않은 코드 목록(코드 값은 제외) |
 | `DELETE /v1/admin/pairing-codes/{코드 ID}` | 사용 전 코드 취소 |
 
 연결 코드 발급 응답에는 `code`, `expires_at`, `server_url`, `connection`(연결 정보)이 들어 있습니다. 코드 값은 이때만 받을 수 있습니다.
-`role`이 `admin`이면 등록한 기기도 관리 API를 사용할 수 있습니다. `server_url`을 생략하면 요청한 주소를 사용합니다.
+`server_url`을 생략하면 요청한 주소를 사용합니다.
 
 ## 서재 만들기
 
@@ -172,9 +176,7 @@ GET 응답의 `ETag`를 다음 GET의 `If-None-Match`로 보내면 변경이 없
 `GET /status`는 인증 없이 외부 연결을 확인하기 위한 API입니다.
 
 ```json
-{"service":"Lof Library Daemon","version":"0.1.0","server_id":"…","name":"NAS","status":"ok","database":"ok","setup_required":false,"time":"2026-10-18T08:00:00Z","uptime_seconds":120}
+{"service":"Lof Library Daemon","version":"0.1.0","server_id":"…","name":"NAS","status":"ok","database":"ok","time":"2026-10-18T08:00:00Z","uptime_seconds":120}
 ```
-
-`setup_required`가 참이면 아직 관리자 비밀번호를 설정하지 않은 서버입니다.
 
 `GET /healthz`는 정상일 때 `{"status":"ok"}`를 반환합니다. 두 API는 DB 장애 시 HTTP 503을 반환합니다.

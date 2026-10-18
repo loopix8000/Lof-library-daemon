@@ -14,8 +14,15 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
 use tokio::net::{TcpListener, TcpStream};
 use tower::ServiceExt;
 
-const TOKEN: &str = "test-only-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx";
 const BASE: &str = "/v1/libraries/library";
+const ADMIN: &str = "library-admin";
+const PASSWORD: &str = "관리자-비밀번호";
+
+/// 호스트가 발급한 연결 코드로 시험용 기기를 등록하고 기기 인증 키를 돌려준다.
+fn device_token(state: &AppState) -> String {
+    let code = state.auth.create_pairing(&state.store, "시험 기기").unwrap()["code"].as_str().unwrap().to_string();
+    state.auth.pair(&state.store, &code, "", "test").unwrap()["token"].as_str().unwrap().to_string()
+}
 
 struct Reply {
     status: u16,
@@ -55,6 +62,7 @@ struct Harness {
     state: Option<AppState>,
     router: Option<Router>,
     serial: usize,
+    token: String,
 }
 
 impl Harness {
@@ -62,8 +70,9 @@ impl Harness {
         let dir = tempfile::Builder::new().prefix("lof-daemon-test-").tempdir().unwrap();
         let clock = Clock::default();
         clock.set(1_700_000_000.0);
-        let mut harness = Self { dir, clock, state: None, router: None, serial: 0 };
+        let mut harness = Self { dir, clock, state: None, router: None, serial: 0, token: String::new() };
         harness.boot();
+        harness.token = device_token(harness.state());
         let created = harness.post("/v1/libraries", json!({"id": "library", "name": "시험 서재"})).await;
         assert_eq!(created.status, 201, "{:?}", created.body);
         harness
@@ -71,7 +80,7 @@ impl Harness {
 
     fn config(&self) -> Config {
         let mut config = Config::new(self.dir.path());
-        config.legacy_token = TOKEN.into();
+        config.web_admin = true;
         config.server_name = "시험 서버".into();
         config.history_tick = Duration::from_secs(3600);
         config
@@ -103,15 +112,15 @@ impl Harness {
     }
 
     async fn get(&self, uri: &str) -> Reply {
-        self.request("GET", uri, None, Some(TOKEN)).await
+        self.request("GET", uri, None, Some(&self.token)).await
     }
 
     async fn post(&self, uri: &str, body: Value) -> Reply {
-        self.request("POST", uri, Some(body), Some(TOKEN)).await
+        self.request("POST", uri, Some(body), Some(&self.token)).await
     }
 
     async fn put(&self, uri: &str, body: Value) -> Reply {
-        self.request("PUT", uri, Some(body), Some(TOKEN)).await
+        self.request("PUT", uri, Some(body), Some(&self.token)).await
     }
 
     async fn put_doc(&mut self, body: &str, version: i64, extra: Value) -> Reply {
@@ -153,11 +162,12 @@ impl Harness {
         self.state().store.history_maintain().unwrap()
     }
 
-    /// 최초 설정 코드를 다시 발급받아 관리자 비밀번호를 설정하고 로그인 키를 돌려준다.
+    /// 호스트의 명령줄에서 최초 설정 코드를 다시 발급받아 웹 관리자 계정을 만들고 로그인 키를 돌려준다.
     async fn admin(&self) -> String {
         let state = self.state();
         let code = state.auth.reset_admin(&state.store).unwrap().unwrap();
-        let response = self.request("POST", "/v1/setup", Some(json!({"code": code, "password": "관리자-비밀번호"})), None).await;
+        let setup = json!({"code": code, "username": ADMIN, "password": PASSWORD});
+        let response = self.request("POST", "/v1/setup", Some(setup), None).await;
         assert_eq!(response.status, 201, "{:?}", response.body);
         response.body["token"].as_str().unwrap().to_string()
     }
@@ -170,14 +180,14 @@ async fn public_status_and_authentication() {
         let response = harness.request("GET", route, None, None).await;
         assert_eq!(response.status, 200);
         assert_eq!(response.body["status"], "ok");
-        assert!(!response.body.to_string().contains(TOKEN));
+        assert!(!response.body.to_string().contains(&harness.token));
     }
     let status = harness.request("GET", "/status", None, None).await.body;
     assert_eq!(status["name"], "시험 서버");
-    assert_eq!(status["setup_required"], true);
     assert_eq!(harness.request("GET", "/v1/libraries", None, None).await.status, 401);
-    assert_eq!(harness.request("GET", "/v1/libraries", None, Some("wrong-token")).await.status, 401);
-    assert_eq!(harness.request("GET", "/v1/admin/server", None, Some(TOKEN)).await.status, 403);
+    assert_eq!(harness.request("GET", "/v1/libraries", None, Some("lofd_wrong-token")).await.status, 401);
+    // 연결 기기의 키로는 관리 API를 쓸 수 없다.
+    assert_eq!(harness.request("GET", "/v1/admin/server", None, Some(&harness.token)).await.status, 403);
 }
 
 #[tokio::test]
@@ -196,7 +206,7 @@ async fn versions_retries_and_noop() {
     assert_eq!(reused.status, 409);
     assert_eq!(reused.body["error"], "mutation_reused");
     assert_eq!(harness.get(&format!("{BASE}/documents/doc")).await.headers["etag"], "\"1\"");
-    let cached = call(harness.router(), "GET", &format!("{BASE}/documents/doc"), None, Some(TOKEN), &[("if-none-match", "\"1\"")]).await;
+    let cached = call(harness.router(), "GET", &format!("{BASE}/documents/doc"), None, Some(&harness.token), &[("if-none-match", "\"1\"")]).await;
     assert_eq!(cached.status, 304);
 }
 
@@ -383,7 +393,7 @@ async fn change_feed_pagination_and_future_cursor() {
     assert_eq!(second["has_more"], false);
     assert_eq!(harness.get(&format!("{BASE}/changes?after=999999")).await.status, 409);
     assert_eq!(harness.get(&format!("{BASE}/events?after=999999")).await.status, 409);
-    let invalid = call(harness.router(), "GET", &format!("{BASE}/events"), None, Some(TOKEN), &[("last-event-id", "invalid")]).await;
+    let invalid = call(harness.router(), "GET", &format!("{BASE}/events"), None, Some(&harness.token), &[("last-event-id", "invalid")]).await;
     assert_eq!(invalid.status, 422);
 }
 
@@ -398,7 +408,7 @@ async fn assets_are_hash_addressed_and_noop_uploads_do_not_emit() {
         Request::builder()
             .method("PUT")
             .uri(&route)
-            .header("authorization", format!("Bearer {TOKEN}"))
+            .header("authorization", format!("Bearer {}", harness.token))
             .body(Body::from(content))
             .unwrap()
     };
@@ -408,11 +418,11 @@ async fn assets_are_hash_addressed_and_noop_uploads_do_not_emit() {
     assert_eq!(send(harness.router(), upload(data.clone())).await.body["created"], false);
     assert_eq!(harness.get(&format!("{BASE}/snapshot")).await.body["cursor"], cursor);
     let downloaded = harness.router().clone().oneshot(
-        Request::builder().uri(&route).header("authorization", format!("Bearer {TOKEN}")).body(Body::empty()).unwrap(),
+        Request::builder().uri(&route).header("authorization", format!("Bearer {}", harness.token)).body(Body::empty()).unwrap(),
     ).await.unwrap();
     assert_eq!(downloaded.into_body().collect().await.unwrap().to_bytes().to_vec(), data);
     let etag = format!("\"{sha256}\"");
-    let cached = call(harness.router(), "GET", &route, None, Some(TOKEN), &[("if-none-match", &etag)]).await;
+    let cached = call(harness.router(), "GET", &route, None, Some(&harness.token), &[("if-none-match", &etag)]).await;
     assert_eq!(cached.status, 304);
 }
 
@@ -457,7 +467,7 @@ async fn request_size_limit_and_validation() {
     let large = Request::builder()
         .method("PUT")
         .uri(format!("{BASE}/assets/{}", "0".repeat(64)))
-        .header("authorization", format!("Bearer {TOKEN}"))
+        .header("authorization", format!("Bearer {}", harness.token))
         .body(Body::from(vec![b'x'; 9 * 1024 * 1024]))
         .unwrap();
     assert_eq!(send(harness.router(), large).await.status, 413);
@@ -476,7 +486,7 @@ async fn chunked_upload_cannot_bypass_request_limit() {
     let request = Request::builder()
         .method("PUT")
         .uri(format!("{BASE}/assets/{}", "0".repeat(64)))
-        .header("authorization", format!("Bearer {TOKEN}"))
+        .header("authorization", format!("Bearer {}", harness.token))
         .body(Body::from_stream(chunks))
         .unwrap();
     assert_eq!(send(harness.router(), request).await.status, 413);
@@ -526,27 +536,51 @@ async fn running_database_backup_is_complete_and_never_overwrites() {
 // 인증과 기기 연결
 
 #[tokio::test]
-async fn first_admin_setup_requires_code_and_login_issues_sessions() {
+async fn web_admin_signs_in_with_username_and_password() {
     let harness = Harness::new().await;
-    let wrong = harness.request("POST", "/v1/setup", Some(json!({"code": "AAAA-AAAA", "password": "관리자-비밀번호"})), None).await;
-    assert_eq!(wrong.status, 403);
+    let wrong_code = json!({"code": "AAAA-AAAA", "username": ADMIN, "password": PASSWORD});
+    assert_eq!(harness.request("POST", "/v1/setup", Some(wrong_code.clone()), None).await.status, 403);
     let session = harness.admin().await;
     assert!(session.starts_with("lofs_"));
-    let again = harness.request("POST", "/v1/setup", Some(json!({"code": "AAAA-AAAA", "password": "다른-비밀번호"})), None).await;
-    assert_eq!(again.status, 409);
-    assert_eq!(harness.request("GET", "/status", None, None).await.body["setup_required"], false);
+    assert_eq!(harness.request("POST", "/v1/setup", Some(wrong_code), None).await.status, 409);
 
-    assert_eq!(harness.request("POST", "/v1/auth/login", Some(json!({"password": "틀린 비밀번호"})), None).await.status, 401);
-    let login = harness.request("POST", "/v1/auth/login", Some(json!({"password": "관리자-비밀번호"})), None).await;
-    assert_eq!(login.status, 200);
+    // 아이디와 비밀번호 중 어느 쪽이 틀렸는지 구분하지 않는다.
+    let wrong_name = harness.request("POST", "/v1/auth/login", Some(json!({"username": "other", "password": PASSWORD})), None).await;
+    let wrong_password = harness.request("POST", "/v1/auth/login", Some(json!({"username": ADMIN, "password": "틀린 비밀번호"})), None).await;
+    assert_eq!((wrong_name.status, wrong_password.status), (401, 401));
+    assert_eq!(wrong_name.body, wrong_password.body);
+    let login = harness.request("POST", "/v1/auth/login", Some(json!({"username": ADMIN, "password": PASSWORD})), None).await;
+    assert_eq!(login.status, 200, "{:?}", login.body);
     let token = login.body["token"].as_str().unwrap().to_string();
-    assert_eq!(harness.request("GET", "/v1/admin/server", None, Some(&token)).await.status, 200);
-    assert_eq!(harness.request("GET", "/v1/libraries", None, Some(&token)).await.status, 200);
+    let server = harness.request("GET", "/v1/admin/server", None, Some(&token)).await;
+    assert_eq!((server.status, server.body["admin_username"].clone()), (200, json!(ADMIN)));
 
-    assert_eq!(harness.request("POST", "/v1/auth/logout", None, Some(&token)).await.status, 204);
+    let change = json!({"current_password": PASSWORD, "new_password": "새-관리자-비밀번호"});
+    let changed = harness.request("PUT", "/v1/admin/password", Some(change), Some(&token)).await;
+    assert_eq!(changed.status, 200, "{:?}", changed.body);
     assert_eq!(harness.request("GET", "/v1/admin/server", None, Some(&token)).await.status, 401);
+    let renewed = changed.body["token"].as_str().unwrap().to_string();
+    assert_eq!(harness.request("POST", "/v1/auth/logout", None, Some(&renewed)).await.status, 204);
+    assert_eq!(harness.request("GET", "/v1/admin/server", None, Some(&renewed)).await.status, 401);
     harness.clock.advance(13.0 * 3600.0);
     assert_eq!(harness.request("GET", "/v1/admin/server", None, Some(&session)).await.status, 401);
+}
+
+#[tokio::test]
+async fn installed_app_opens_no_web_admin() {
+    let dir = tempfile::Builder::new().prefix("lof-daemon-test-").tempdir().unwrap();
+    let daemon = Daemon::start(Config::new(dir.path())).unwrap();
+    let state = daemon.state();
+    let router = api::router(state.clone());
+    for route in ["/v1/setup", "/v1/auth/login"] {
+        assert_eq!(call(&router, "POST", route, Some(json!({})), None, &[]).await.status, 404);
+    }
+    assert_eq!(call(&router, "GET", "/v1/admin/server", None, None, &[]).await.status, 404);
+    // 설치형 앱은 로그인 없이 같은 프로세스에서 코드를 발급한다.
+    let created = state.create_pairing("노트북".into(), "http://192.168.0.2:8787".into()).await.unwrap();
+    assert!(created["connection"].as_str().unwrap().starts_with("lof-library://connect?server=http%3A%2F%2F192.168.0.2%3A8787"));
+    let paired = call(&router, "POST", "/v1/pair", Some(json!({"code": created["code"]})), None, &[]).await;
+    assert_eq!(paired.status, 201, "{:?}", paired.body);
 }
 
 #[tokio::test]
@@ -558,7 +592,7 @@ async fn pairing_codes_issue_device_keys_once() {
         .await;
     assert_eq!(created.status, 201, "{:?}", created.body);
     let code = created.body["code"].as_str().unwrap().to_string();
-    assert!(created.body["connection"].as_str().unwrap().starts_with("lof-library://connect?server=http%3A%2F%2F192.168.0.2%3A8787"));
+    assert_eq!(harness.request("GET", "/v1/admin/server", None, Some(&admin)).await.status, 200);
     assert_eq!(harness.request("GET", "/v1/admin/pairing-codes", None, Some(&admin)).await.body["entries"].as_array().unwrap().len(), 1);
 
     let paired = harness.request("POST", "/v1/pair", Some(json!({"code": code.to_lowercase().replace('-', ""), "platform": "windows"})), None).await;
@@ -578,7 +612,8 @@ async fn pairing_codes_issue_device_keys_once() {
     let renamed = harness.request("PATCH", &format!("/v1/admin/devices/{device_id}"), Some(json!({"name": "작업용 노트북"})), Some(&admin)).await;
     assert_eq!(renamed.body["name"], "작업용 노트북");
     let devices = harness.request("GET", "/v1/admin/devices", None, Some(&admin)).await.body;
-    assert_eq!(devices["devices"][0]["platform"], "windows");
+    let laptop = devices["devices"].as_array().unwrap().iter().find(|device| device["id"] == device_id.as_str()).unwrap();
+    assert_eq!(laptop["platform"], "windows");
     assert_eq!(harness.request("DELETE", &format!("/v1/admin/devices/{device_id}"), None, Some(&admin)).await.status, 204);
     assert_eq!(harness.request("GET", "/v1/libraries", None, Some(&device)).await.status, 401);
 
@@ -599,10 +634,10 @@ async fn repeated_wrong_codes_are_throttled() {
 
 // 실시간 수신
 
-async fn open_events(address: std::net::SocketAddr, path: &str, last_event_id: Option<i64>) -> Lines<BufReader<TcpStream>> {
+async fn open_events(address: std::net::SocketAddr, token: &str, path: &str, last_event_id: Option<i64>) -> Lines<BufReader<TcpStream>> {
     let mut stream = TcpStream::connect(address).await.unwrap();
     let resume = last_event_id.map(|id| format!("Last-Event-ID: {id}\r\n")).unwrap_or_default();
-    let request = format!("GET {path} HTTP/1.0\r\nHost: 127.0.0.1\r\nAuthorization: Bearer {TOKEN}\r\n{resume}\r\n");
+    let request = format!("GET {path} HTTP/1.0\r\nHost: 127.0.0.1\r\nAuthorization: Bearer {token}\r\n{resume}\r\n");
     stream.write_all(request.as_bytes()).await.unwrap();
     let mut lines = BufReader::new(stream).lines();
     let status = lines.next_line().await.unwrap().unwrap();
@@ -627,9 +662,9 @@ async fn next_event(lines: &mut Lines<BufReader<TcpStream>>) -> Value {
 async fn live_events_and_resume() {
     let dir = tempfile::Builder::new().prefix("lof-daemon-test-").tempdir().unwrap();
     let mut config = Config::new(dir.path());
-    config.legacy_token = TOKEN.into();
     config.heartbeat = Duration::from_millis(100);
     let daemon = Daemon::start(config).unwrap();
+    let token = device_token(&daemon.state());
     let router = api::router(daemon.state());
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -639,18 +674,18 @@ async fn live_events_and_resume() {
     }));
 
     assert_eq!(call(&router, "GET", "/status", None, None, &[]).await.body["status"], "ok");
-    call(&router, "POST", "/v1/libraries", Some(json!({"id": "library", "name": "실시간 서재"})), Some(TOKEN), &[]).await;
-    let cursor = call(&router, "GET", &format!("{BASE}/snapshot"), None, Some(TOKEN), &[]).await.body["cursor"].as_i64().unwrap();
+    call(&router, "POST", "/v1/libraries", Some(json!({"id": "library", "name": "실시간 서재"})), Some(&token), &[]).await;
+    let cursor = call(&router, "GET", &format!("{BASE}/snapshot"), None, Some(&token), &[]).await.body["cursor"].as_i64().unwrap();
 
-    let mut lines = open_events(address, &format!("{BASE}/events?after={cursor}"), None).await;
+    let mut lines = open_events(address, &token, &format!("{BASE}/events?after={cursor}"), None).await;
     let document = json!({"title": "원고", "body": "실시간 변경", "device_id": "pc", "mutation_id": "live", "expected_version": 0});
-    call(&router, "PUT", &format!("{BASE}/documents/doc"), Some(document), Some(TOKEN), &[]).await;
+    call(&router, "PUT", &format!("{BASE}/documents/doc"), Some(document), Some(&token), &[]).await;
     let event = next_event(&mut lines).await;
     assert_eq!(event["type"], "document.updated");
     assert_eq!(event["data"]["id"], "doc");
     drop(lines);
 
-    let mut lines = open_events(address, &format!("{BASE}/events"), event["id"].as_i64()).await;
+    let mut lines = open_events(address, &token, &format!("{BASE}/events"), event["id"].as_i64()).await;
     let replayed = next_event(&mut lines).await;
     assert_eq!(replayed["type"], "history.created");
     assert!(replayed["id"].as_i64() > event["id"].as_i64());

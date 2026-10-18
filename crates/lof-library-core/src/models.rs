@@ -247,17 +247,30 @@ impl Validate for Resolve {
     }
 }
 
+/// 관리자 아이디는 영문·숫자·`_`·`-`·`.`로 3~32자다.
+fn username(value: &str) -> Result<(), String> {
+    let value = value.trim();
+    let valid = (3..=32).contains(&value.len())
+        && value.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'));
+    if valid {
+        Ok(())
+    } else {
+        Err("아이디는 영문, 숫자, _, -, .으로 3~32자 입력해 주세요.".into())
+    }
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Setup {
-    #[serde(default)]
-    pub code: Option<String>,
+    pub code: String,
+    pub username: String,
     pub password: String,
 }
 
 impl Validate for Setup {
     fn validate(&self) -> Result<(), String> {
-        length(self.code.as_deref().unwrap_or(""), 0, 32, "설정 코드")?;
+        length(&self.code, 4, 32, "설정 코드")?;
+        username(&self.username)?;
         length(&self.password, 8, 256, "비밀번호")
     }
 }
@@ -265,11 +278,13 @@ impl Validate for Setup {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Login {
+    pub username: String,
     pub password: String,
 }
 
 impl Validate for Login {
     fn validate(&self) -> Result<(), String> {
+        length(&self.username, 1, 64, "아이디")?;
         length(&self.password, 1, 256, "비밀번호")
     }
 }
@@ -277,14 +292,13 @@ impl Validate for Login {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PasswordChange {
-    #[serde(default)]
-    pub current_password: Option<String>,
+    pub current_password: String,
     pub new_password: String,
 }
 
 impl Validate for PasswordChange {
     fn validate(&self) -> Result<(), String> {
-        length(self.current_password.as_deref().unwrap_or(""), 0, 256, "현재 비밀번호")?;
+        length(&self.current_password, 1, 256, "현재 비밀번호")?;
         length(&self.new_password, 8, 256, "새 비밀번호")
     }
 }
@@ -301,17 +315,11 @@ impl Validate for DeviceUpdate {
     }
 }
 
-fn default_role() -> String {
-    "device".into()
-}
-
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PairingCreate {
     #[serde(default)]
     pub name: String,
-    #[serde(default = "default_role")]
-    pub role: String,
     #[serde(default)]
     pub server_url: Option<String>,
 }
@@ -332,9 +340,6 @@ pub fn valid_server_url(value: &str) -> bool {
 impl Validate for PairingCreate {
     fn validate(&self) -> Result<(), String> {
         length(&self.name, 0, 100, "기기 이름")?;
-        if !["device", "admin"].contains(&self.role.as_str()) {
-            return Err("role은 device 또는 admin입니다.".into());
-        }
         if let Some(url) = &self.server_url {
             if !valid_server_url(url) {
                 return Err("서버 주소는 http:// 또는 https://로 시작하는 주소로 입력해 주세요.".into());

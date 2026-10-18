@@ -6,8 +6,6 @@ services:
     environment:
       LOF_DATA_DIR: /data
       LOF_SERVER_NAME: ${LOF_SERVER_NAME:-}
-      # 이전 버전의 공통 토큰을 쓰던 기기가 있을 때만 설정합니다.
-      LOF_API_TOKEN: ${LOF_API_TOKEN:-}
     ports:
       - "${LOF_PORT:-8787}:8787"
     volumes:

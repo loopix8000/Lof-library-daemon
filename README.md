@@ -24,12 +24,10 @@ Lof Writer용 개인 중앙 동기화 서버입니다. Rust(axum)와 SQLite로 �
 ## 인증과 기기 연결
 
 - **서버 키**: 최초 기동 때 자동으로 만들어 DB에 보관합니다. 재기동·업데이트·백업 복구 후에도 기존 기기 연결이 유지됩니다.
-- **관리자**: 관리 화면 로그인용 비밀번호입니다. 처음 한 번은 서버 로그에 표시되는 **최초 설정 코드**를 입력해 설정합니다. 설치형 앱에서는 코드 없이 바로 설정합니다.
+- **관리**: 설치형 앱은 서버를 실행하는 PC가 곧 관리자이므로 로그인 없이 앱에서 관리합니다. Docker는 웹 관리용 **아이디·비밀번호**로 로그인하며, 호스트 터미널에서는 명령으로 바로 관리할 수 있습니다.
 - **연결 코드**: 관리자가 발급하며 10분 동안 한 번만 쓸 수 있습니다. 서버 주소와 함께 `lof-library://connect?server=…&code=…` 형식의 연결 정보·QR로 전달합니다.
-- **기기 인증 키**: 연결 코드로 등록할 때 기기마다 발급합니다. 관리자가 기기를 연결 해제하면 즉시 사용할 수 없습니다.
-- 잘못된 코드·비밀번호를 반복해서 입력하면 잠시 요청을 거부합니다.
-
-이전 버전의 `LOF_API_TOKEN`을 설정하면 일반 기기 권한으로만 계속 허용합니다. 모든 기기를 연결 코드로 다시 연결한 뒤 설정을 지웁니다.
+- **기기 인증 키**: 연결 코드로 등록할 때 기기마다 발급합니다. 기기 키로는 동기화만 할 수 있고, 관리자가 연결을 해제하면 즉시 사용할 수 없습니다.
+- 잘못된 코드·아이디·비밀번호를 반복해서 입력하면 잠시 요청을 거부합니다.
 
 ## Docker로 실행
 
@@ -38,10 +36,17 @@ docker compose up -d --build
 docker compose logs daemon
 ```
 
-로그의 `최초 설정 코드 XXXX-XXXX`를 관리 화면의 최초 설정에서 입력하고 관리자 비밀번호를 정합니다.
-코드를 잃어버렸거나 비밀번호를 잊었으면 다음 명령으로 새 코드를 발급합니다.
+로그의 `최초 설정 코드 XXXX-XXXX`로 웹 관리자 아이디와 비밀번호를 만듭니다(`POST /v1/setup`). 이후에는 아이디와 비밀번호로 로그인합니다.
+
+호스트 터미널에서는 로그인 없이 다음 명령으로 관리합니다. 서버를 멈출 필요는 없습니다.
 
 ```sh
+# 연결 코드 발급. --server-url을 주면 연결 정보와 QR도 표시합니다.
+docker compose exec daemon lof-library-server pair --name 노트북 --server-url http://192.168.0.10:8787
+# 연결 기기 목록과 연결 해제
+docker compose exec daemon lof-library-server devices
+docker compose exec daemon lof-library-server revoke <기기 ID>
+# 웹 관리자 계정을 지우고 새 최초 설정 코드 발급(비밀번호를 잊었을 때)
 docker compose exec daemon lof-library-server reset-admin
 ```
 
@@ -54,19 +59,22 @@ docker compose exec daemon lof-library-server reset-admin
 `desktop` 앱은 서버를 앱 안에서 실행하고 트레이에 상주합니다. Python 등 별도 런타임이 필요 없습니다.
 
 - 창을 닫아도 서버는 계속 실행되며, 트레이 메뉴의 **종료**로 끝냅니다. 두 번 실행하면 기존 창을 엽니다.
-- 관리 창에서 서버 시작·중지, 접속 주소 확인, 관리자 비밀번호 설정, 연결 코드·QR 발급, 연결 기기 이름 변경·해제를 합니다.
+- 로그인 없이 관리 창에서 서버 시작·중지, 접속 주소 확인, 연결 코드·QR 발급, 연결 기기 이름 변경·해제를 합니다. 네트워크로 여는 관리 API는 없습니다.
+- 접속 주소는 같은 네트워크·VPN(Tailscale 등)·인터넷(공인 IP)·이 PC로 나눠 보여 줍니다. 공인 IP는 외부 조회 서비스(ipify, icanhazip)로 확인하며, 인터넷에서 접속하려면 공유기에서 포트 포워딩을 설정해야 합니다.
 - 포트, 다른 기기 접속 허용, PC 시작 시 자동 실행을 설정합니다. 자동 실행 때는 창 없이 트레이에서 시작합니다.
 - 데이터는 `%APPDATA%\local.lof.library\data`에 저장합니다. 업데이트·재설치해도 유지되며, 설치 제거 때 데이터 삭제 여부를 선택합니다.
 
-설치 파일 만들기(Node.js와 Rust 필요):
+배포본 만들기(Node.js와 Rust 필요):
 
 ```powershell
 cd desktop
 npm install
-npm run package
+npm run package:dir
+npm run package:nsis
 ```
 
-설치 파일은 `target\release\bundle\nsis`에 만들어집니다.
+`package:dir`은 `C:\Projects\lof-library-daemon\release\win-unpacked`에 실행 파일 하나로 된 폴더 배포본을 만듭니다.
+`package:nsis`는 같은 폴더 배포본과 함께 설치 파일을 `C:\Projects\lof-library-daemon\release`에 복사합니다.
 
 ## 외부 연결 확인
 
@@ -77,7 +85,7 @@ curl http://서버주소:8787/status
 curl http://서버주소:8787/healthz
 ```
 
-`/status`는 서버 이름·ID·버전, 관리자 설정 필요 여부, UTC 시각, 가동 시간과 DB 상태를 반환합니다.
+`/status`는 서버 이름·ID·버전, UTC 시각, 가동 시간과 DB 상태를 반환합니다.
 정상이면 HTTP `200`과 `"status":"ok"`, DB를 사용할 수 없으면 HTTP `503`을 반환합니다.
 외부 확인에는 실행 PC의 `localhost` 대신 NAS 주소나 공개 도메인을 사용하고 포트·프록시를 연결해야 합니다.
 
@@ -95,7 +103,6 @@ cargo run -p lof-library-server -- --port 8787 --data-dir data
 | `--port` | `LOF_PORT` | `8787` |
 | `--data-dir` | `LOF_DATA_DIR` | `data` |
 | | `LOF_SERVER_NAME` | 컴퓨터 이름 |
-| | `LOF_API_TOKEN` | 없음(이전 방식 호환용) |
 
 로그 수준은 `RUST_LOG`로 바꿀 수 있습니다. API 요청 예제와 재연결 순서는 [API.md](API.md)를 참고합니다.
 

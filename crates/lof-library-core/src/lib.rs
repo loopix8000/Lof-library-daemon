@@ -1,4 +1,4 @@
-//! Lof Writer 서재 동기화 서버 본체. Docker용 실행 파일과 설치형 관리 앱이 함께 사용한다.
+//! Lof Writer 서재 동기화 서버 본체. 설치형 관리 앱이 같은 프로세스에서 실행한다.
 
 pub mod api;
 pub mod auth;
@@ -21,7 +21,7 @@ use tokio::net::TcpListener;
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
-use auth::{Auth, Principal, Throttle};
+use auth::{Auth, Throttle};
 use error::{ApiError, ApiResult, StartError};
 use store::{Clock, Store};
 
@@ -31,9 +31,9 @@ pub const SERVICE: &str = "Lof Library Daemon";
 #[derive(Clone, Debug)]
 pub struct Config {
     pub data_dir: PathBuf,
-    /// 이전 버전의 공통 토큰. 설정하면 일반 기기 권한으로만 계속 허용한다.
-    pub legacy_token: String,
     pub server_name: String,
+    /// 아이디·비밀번호로 로그인하는 웹 관리 API를 연다. Docker용이며, 설치형 앱은 로그인 없이 직접 관리한다.
+    pub web_admin: bool,
     pub history_tick: Duration,
     pub maintenance: Duration,
     pub heartbeat: Duration,
@@ -44,8 +44,8 @@ impl Config {
     pub fn new(data_dir: impl Into<PathBuf>) -> Self {
         Self {
             data_dir: data_dir.into(),
-            legacy_token: String::new(),
             server_name: Self::default_server_name(),
+            web_admin: false,
             history_tick: Duration::from_secs(10),
             maintenance: Duration::from_secs(3600),
             heartbeat: Duration::from_secs(15),
@@ -63,10 +63,6 @@ impl Config {
     }
 
     pub fn validate(&self) -> Result<(), StartError> {
-        let token = &self.legacy_token;
-        if !token.is_empty() && (token.len() < 32 || !token.is_ascii() || token.chars().any(char::is_whitespace)) {
-            return Err(StartError("LOF_API_TOKEN을 사용하려면 공백 없는 32자 이상의 값을 설정해 주세요.".into()));
-        }
         let name = self.server_name.trim();
         if name.is_empty() || name.chars().count() > 100 {
             return Err(StartError("서버 이름은 1~100자로 설정해 주세요.".into()));
@@ -94,11 +90,6 @@ impl InstanceLock {
             .map_err(|_| StartError("이 데이터 폴더를 사용하는 서버가 이미 실행 중입니다.".into()))?;
         Ok(Self(file))
     }
-}
-
-pub enum Gate {
-    Pairing,
-    Login,
 }
 
 /// 요청 처리기와 설치형 관리 앱이 함께 쓰는 서버 상태
@@ -183,24 +174,46 @@ impl AppState {
     }
 
     /// 코드·비밀번호 입력 실패를 세어 일정 횟수를 넘으면 잠시 거부한다.
-    pub async fn guarded<T: Send + 'static>(
+    async fn guarded<T: Send + 'static>(
         &self,
-        gate: Gate,
+        throttle: fn(&Inner) -> &Throttle,
         source: &str,
         action: impl FnOnce(&Inner) -> ApiResult<T> + Send + 'static,
     ) -> ApiResult<T> {
-        let throttle = match gate {
-            Gate::Pairing => &self.pair_throttle,
-            Gate::Login => &self.login_throttle,
-        };
-        throttle.check(source)?;
+        throttle(self).check(source)?;
         let result = self.blocking(action).await;
         if let Err(error) = &result {
             if matches!(error.status.as_u16(), 401 | 403 | 404 | 410) {
-                throttle.fail(source);
+                throttle(self).fail(source);
             }
         }
         result
+    }
+
+    /// 연결 코드로 기기를 등록한다.
+    pub async fn pair(&self, source: &str, code: String, name: String, platform: String) -> ApiResult<Value> {
+        self.guarded(|inner| &inner.pair_throttle, source, move |inner| inner.auth.pair(&inner.store, &code, &name, &platform))
+            .await
+    }
+
+    /// 서버 로그의 최초 설정 코드로 웹 관리자 계정을 만든다.
+    pub async fn setup(&self, source: &str, code: String, username: String, password: String) -> ApiResult<Value> {
+        self.guarded(|inner| &inner.login_throttle, source, move |inner| {
+            inner.auth.setup(&inner.store, &code, &username, &password)
+        })
+        .await
+    }
+
+    pub async fn login(&self, source: &str, username: String, password: String) -> ApiResult<Value> {
+        self.guarded(|inner| &inner.login_throttle, source, move |inner| inner.auth.login(&inner.store, &username, &password))
+            .await
+    }
+
+    pub async fn change_password(&self, source: &str, current: String, new: String) -> ApiResult<Value> {
+        self.guarded(|inner| &inner.login_throttle, source, move |inner| {
+            inner.auth.change_password(&inner.store, &current, &new)
+        })
+        .await
     }
 
     pub fn uptime_seconds(&self) -> u64 {
@@ -215,7 +228,7 @@ impl AppState {
                 Ok(json!({"libraries": count("libraries")?, "documents": count("documents")?, "devices": count("devices")?}))
             })?;
             let mut info = inner.auth.identity();
-            info["setup_required"] = json!(inner.auth.setup_required(&inner.store)?);
+            info["admin_username"] = json!(inner.auth.admin_username(&inner.store)?);
             info["data_dir"] = json!(inner.config.data_dir);
             info["storage_bytes"] = json!(inner.store.storage_bytes());
             info["counts"] = counts;
@@ -227,20 +240,6 @@ impl AppState {
             info["uptime_seconds"] = json!(self.uptime_seconds());
             info
         })
-    }
-
-    pub async fn setup(&self, principal: Option<Principal>, code: Option<String>, password: String, source: &str) -> ApiResult<Value> {
-        self.guarded(Gate::Login, source, move |inner| {
-            inner.auth.setup(&inner.store, principal.as_ref(), code.as_deref(), &password)
-        })
-        .await
-    }
-
-    pub async fn change_password(&self, principal: Principal, current: Option<String>, new: String, source: &str) -> ApiResult<Value> {
-        self.guarded(Gate::Login, source, move |inner| {
-            inner.auth.change_password(&inner.store, &principal, current.as_deref(), &new)
-        })
-        .await
     }
 
     pub async fn devices(&self) -> ApiResult<Value> {
@@ -257,10 +256,9 @@ impl AppState {
         self.write(move |inner| inner.auth.revoke_device(&inner.store, &device_id)).await
     }
 
-    pub async fn create_pairing(&self, principal: Principal, name: String, role: String, server_url: String) -> ApiResult<Value> {
-        let mut entry = self
-            .blocking(move |inner| inner.auth.create_pairing(&inner.store, &principal, &name, &role))
-            .await?;
+    /// 호스트가 새 기기를 연결할 일회용 코드를 발급한다.
+    pub async fn create_pairing(&self, name: String, server_url: String) -> ApiResult<Value> {
+        let mut entry = self.blocking(move |inner| inner.auth.create_pairing(&inner.store, &name)).await?;
         let server_url = server_url.trim_end_matches('/').to_string();
         entry["connection"] = json!(connection_link(&server_url, entry["code"].as_str().unwrap_or_default()));
         entry["server_url"] = json!(server_url);
@@ -290,12 +288,11 @@ impl Daemon {
         config.validate()?;
         let lock = InstanceLock::acquire(&config.data_dir)?;
         let store = Store::open(&config.data_dir, clock)?;
-        let auth = Auth::load(&store, config.server_name.trim(), &config.legacy_token)?;
-        if let Some(code) = auth.prepare_setup(&store)? {
-            tracing::warn!("관리자가 아직 설정되지 않았습니다. 관리 화면에서 최초 설정 코드 {code} 를 입력해 주세요.");
-        }
-        if !config.legacy_token.is_empty() {
-            tracing::warn!("LOF_API_TOKEN은 이전 방식의 공통 토큰입니다. 모든 기기를 연결 코드로 다시 연결한 뒤 설정을 제거해 주세요.");
+        let auth = Auth::load(&store, config.server_name.trim())?;
+        if config.web_admin {
+            if let Some(code) = auth.prepare_setup(&store)? {
+                tracing::warn!("관리자 계정이 아직 없습니다. 웹 관리 화면에서 최초 설정 코드 {code} 로 관리자 아이디와 비밀번호를 만들어 주세요.");
+            }
         }
         let (notifier, _) = watch::channel(0);
         let inner = Inner {

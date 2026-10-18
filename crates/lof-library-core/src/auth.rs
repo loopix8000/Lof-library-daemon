@@ -24,35 +24,27 @@ const KEEP_USED_SECONDS: f64 = 24.0 * 60.0 * 60.0;
 const SCRYPT_LOG_N: u8 = 15;
 const SCRYPT_R: u32 = 8;
 const SCRYPT_P: u32 = 1;
+const LOGIN_FAILED: &str = "아이디 또는 비밀번호가 올바르지 않습니다.";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Kind {
-    /// 서버를 같은 프로세스에서 실행하는 설치형 관리 앱
-    Local,
-    /// 관리 화면 로그인
+    /// 웹 관리 화면에 아이디·비밀번호로 로그인한 관리자
     Session,
-    /// 연결 코드로 등록한 기기
+    /// 연결 코드로 등록한 기기. 동기화만 할 수 있다.
     Device,
-    /// 이전 버전의 공통 토큰
-    Legacy,
 }
 
 #[derive(Clone, Debug, Serialize)]
 pub struct Principal {
     pub kind: Kind,
-    pub role: String,
     pub id: String,
     pub name: String,
 }
 
 impl Principal {
-    pub fn local() -> Self {
-        Self { kind: Kind::Local, role: "admin".into(), id: "local".into(), name: "이 컴퓨터".into() }
-    }
-
     pub fn admin(&self) -> bool {
-        self.role == "admin"
+        self.kind == Kind::Session
     }
 }
 
@@ -147,12 +139,11 @@ impl Throttle {
     }
 }
 
-/// 서버 키, 관리자 비밀번호와 세션, 기기 인증 키, 일회용 연결 코드를 서로 분리해 관리한다.
+/// 서버 키, 관리자 계정과 로그인, 기기 인증 키, 일회용 연결 코드를 서로 분리해 관리한다.
 pub struct Auth {
     secret: Vec<u8>,
     pub server_id: String,
     pub server_name: String,
-    legacy_token: String,
 }
 
 fn get(db: &Connection, key: &str) -> ApiResult<Option<String>> {
@@ -170,13 +161,13 @@ fn put(db: &Connection, key: &str, value: &str) -> ApiResult<()> {
 fn device_row(row: &rusqlite::Row) -> rusqlite::Result<Value> {
     Ok(json!({
         "id": row.get::<_, String>("id")?, "name": row.get::<_, String>("name")?,
-        "role": row.get::<_, String>("role")?, "platform": row.get::<_, String>("platform")?,
+        "platform": row.get::<_, String>("platform")?,
         "created_at": row.get::<_, f64>("created_at")?, "last_seen_at": row.get::<_, Option<f64>>("last_seen_at")?,
     }))
 }
 
 impl Auth {
-    pub fn load(store: &Store, server_name: &str, legacy_token: &str) -> ApiResult<Self> {
+    pub fn load(store: &Store, server_name: &str) -> ApiResult<Self> {
         // 서버 키는 최초 기동 때 한 번 만들고 DB에 보관해 재기동·업데이트·백업 복구 후에도 기기 연결을 유지한다.
         let (secret, server_id) = store.write(|db| {
             let secret = match get(db, "secret")? {
@@ -203,7 +194,6 @@ impl Auth {
             secret: hex::decode(secret).map_err(|_| ApiError::internal())?,
             server_id,
             server_name: server_name.to_string(),
-            legacy_token: legacy_token.to_string(),
         })
     }
 
@@ -229,13 +219,13 @@ impl Auth {
         Ok(json!({"token": token, "expires_at": now + SESSION_SECONDS}))
     }
 
-    // 관리자
+    // 관리자 계정. 웹 관리 화면에서만 사용하며, 설치형 앱은 로그인 없이 관리한다.
 
     pub fn setup_required(&self, store: &Store) -> ApiResult<bool> {
         store.read(|db| Ok(get(db, "admin_password")?.is_none()))
     }
 
-    /// 관리자가 없으면 새 최초 설정 코드를 만든다. 이전 코드는 더 이상 쓸 수 없다.
+    /// 관리자 계정이 없으면 새 최초 설정 코드를 만든다. 이전 코드는 더 이상 쓸 수 없다.
     pub fn prepare_setup(&self, store: &Store) -> ApiResult<Option<String>> {
         store.write(|db| {
             if get(db, "admin_password")?.is_some() {
@@ -247,40 +237,44 @@ impl Auth {
         })
     }
 
+    /// 관리자 계정과 로그인을 지우고 새 최초 설정 코드를 발급한다. 호스트의 명령줄에서만 실행한다.
     pub fn reset_admin(&self, store: &Store) -> ApiResult<Option<String>> {
         store.write(|db| {
-            db.execute("DELETE FROM server WHERE key IN ('admin_password','setup_code')", [])?;
+            db.execute("DELETE FROM server WHERE key IN ('admin_username','admin_password','setup_code')", [])?;
             db.execute("DELETE FROM sessions", [])?;
             Ok(())
         })?;
         self.prepare_setup(store)
     }
 
-    pub fn setup(&self, store: &Store, principal: Option<&Principal>, code: Option<&str>, password: &str) -> ApiResult<Value> {
+    pub fn setup(&self, store: &Store, code: &str, username: &str, password: &str) -> ApiResult<Value> {
         let hashed = hash_password(password);
         store.write(|db| {
             if get(db, "admin_password")?.is_some() {
-                return Err(ApiError::new(409, "already_configured", "관리자가 이미 설정되어 있습니다."));
+                return Err(ApiError::new(409, "already_configured", "관리자 계정이 이미 있습니다."));
             }
-            // 서버를 직접 실행하는 이 컴퓨터의 관리 앱은 설정 코드 없이 바로 설정할 수 있다.
-            if principal.is_none_or(|principal| principal.kind != Kind::Local) {
-                let expected = get(db, "setup_code")?;
-                let provided = self.hash("setup", &normalize_code(code.unwrap_or_default()));
-                if !expected.is_some_and(|expected| equal(&expected, &provided)) {
-                    return Err(ApiError::new(403, "setup_code_invalid", "최초 설정 코드가 올바르지 않습니다. 서버 로그의 코드를 확인해 주세요."));
-                }
+            let expected = get(db, "setup_code")?;
+            let provided = self.hash("setup", &normalize_code(code));
+            if !expected.is_some_and(|expected| equal(&expected, &provided)) {
+                return Err(ApiError::new(403, "setup_code_invalid", "최초 설정 코드가 올바르지 않습니다. 서버 로그의 코드를 확인해 주세요."));
             }
+            put(db, "admin_username", username.trim())?;
             put(db, "admin_password", &hashed)?;
             db.execute("DELETE FROM server WHERE key='setup_code'", [])?;
             self.session(store, db)
         })
     }
 
-    pub fn login(&self, store: &Store, password: &str) -> ApiResult<Value> {
-        let stored = store.read(|db| get(db, "admin_password"))?
-            .ok_or_else(|| ApiError::new(409, "setup_required", "먼저 관리자 비밀번호를 설정해 주세요."))?;
-        if !verify_password(password, &stored) {
-            return Err(ApiError::new(401, "invalid_password", "비밀번호가 올바르지 않습니다."));
+    pub fn login(&self, store: &Store, username: &str, password: &str) -> ApiResult<Value> {
+        let (stored_username, stored_password) = store.read(|db| Ok((get(db, "admin_username")?, get(db, "admin_password")?)))?;
+        let Some(stored_password) = stored_password else {
+            return Err(ApiError::new(409, "setup_required", "먼저 서버 로그의 최초 설정 코드로 관리자 계정을 만들어 주세요."));
+        };
+        // 아이디가 틀려도 비밀번호 확인을 똑같이 거쳐 어느 쪽이 틀렸는지 응답 시간으로 드러나지 않게 한다.
+        let name_matches = equal(username.trim(), stored_username.as_deref().unwrap_or_default());
+        let password_matches = verify_password(password, &stored_password);
+        if !(name_matches && password_matches) {
+            return Err(ApiError::new(401, "invalid_credentials", LOGIN_FAILED));
         }
         store.write(|db| self.session(store, db))
     }
@@ -295,14 +289,14 @@ impl Auth {
         Ok(())
     }
 
-    pub fn change_password(&self, store: &Store, principal: &Principal, current: Option<&str>, new: &str) -> ApiResult<Value> {
+    pub fn change_password(&self, store: &Store, current: &str, new: &str) -> ApiResult<Value> {
         let stored = store.read(|db| get(db, "admin_password"))?
-            .ok_or_else(|| ApiError::new(409, "setup_required", "먼저 관리자 비밀번호를 설정해 주세요."))?;
-        if principal.kind != Kind::Local && !verify_password(current.unwrap_or_default(), &stored) {
+            .ok_or_else(|| ApiError::new(409, "setup_required", "먼저 관리자 계정을 만들어 주세요."))?;
+        if !verify_password(current, &stored) {
             return Err(ApiError::new(403, "invalid_password", "현재 비밀번호가 올바르지 않습니다."));
         }
         let hashed = hash_password(new);
-        // 비밀번호를 바꾸면 다른 브라우저의 로그인을 모두 끝내고 요청한 쪽에만 새 세션을 준다.
+        // 비밀번호를 바꾸면 다른 브라우저의 로그인을 모두 끝내고 요청한 쪽에만 새 로그인을 준다.
         store.write(|db| {
             put(db, "admin_password", &hashed)?;
             db.execute("DELETE FROM sessions", [])?;
@@ -310,65 +304,59 @@ impl Auth {
         })
     }
 
+    pub fn admin_username(&self, store: &Store) -> ApiResult<Option<String>> {
+        store.read(|db| get(db, "admin_username"))
+    }
+
     // 인증
 
     pub fn authenticate(&self, store: &Store, token: &str) -> ApiResult<Option<Principal>> {
-        if token.is_empty() {
-            return Ok(None);
-        }
-        if !self.legacy_token.is_empty() && equal(token, &self.legacy_token) {
-            return Ok(Some(Principal {
-                kind: Kind::Legacy, role: "device".into(), id: "legacy".into(), name: "기존 공통 토큰".into(),
-            }));
-        }
         let now = store.clock.now();
         if token.starts_with("lofs_") {
             let hashed = self.hash("session", token);
             let expires: Option<f64> = store.read(|db| {
                 Ok(db.query_row("SELECT expires_at FROM sessions WHERE token_hash=?1", [&hashed], |row| row.get(0)).optional()?)
             })?;
-            return Ok(expires.filter(|expires| *expires > now).map(|_| Principal {
-                kind: Kind::Session, role: "admin".into(), id: hashed, name: "관리자".into(),
-            }));
+            return Ok(expires
+                .filter(|expires| *expires > now)
+                .map(|_| Principal { kind: Kind::Session, id: hashed, name: "관리자".into() }));
         }
-        if token.starts_with("lofd_") {
-            let hashed = self.hash("device", token);
-            let row: Option<(String, String, String, Option<f64>)> = store.read(|db| {
-                Ok(db
-                    .query_row("SELECT id,name,role,last_seen_at FROM devices WHERE token_hash=?1", [&hashed], |row| {
-                        Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
-                    })
-                    .optional()?)
+        if !token.starts_with("lofd_") {
+            return Ok(None);
+        }
+        let hashed = self.hash("device", token);
+        let row: Option<(String, String, Option<f64>)> = store.read(|db| {
+            Ok(db
+                .query_row("SELECT id,name,last_seen_at FROM devices WHERE token_hash=?1", [&hashed], |row| {
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+                })
+                .optional()?)
+        })?;
+        let Some((id, name, last_seen)) = row else { return Ok(None) };
+        // 마지막 접속 시각은 일정 간격으로만 기록해 요청마다 쓰기가 생기지 않게 한다.
+        if last_seen.is_none_or(|seen| now - seen >= SEEN_INTERVAL) {
+            store.write(|db| {
+                db.execute("UPDATE devices SET last_seen_at=?1 WHERE id=?2", params![now, id])?;
+                Ok(())
             })?;
-            let Some((id, name, role, last_seen)) = row else { return Ok(None) };
-            // 마지막 접속 시각은 일정 간격으로만 기록해 요청마다 쓰기가 생기지 않게 한다.
-            if last_seen.is_none_or(|seen| now - seen >= SEEN_INTERVAL) {
-                store.write(|db| {
-                    db.execute("UPDATE devices SET last_seen_at=?1 WHERE id=?2", params![now, id])?;
-                    Ok(())
-                })?;
-            }
-            return Ok(Some(Principal { kind: Kind::Device, role, id, name }));
         }
-        Ok(None)
+        Ok(Some(Principal { kind: Kind::Device, id, name }))
     }
 
+    /// 연결 해제한 기기나 끝난 로그인의 실시간 수신을 끊기 위해 상태를 다시 확인한다.
     pub fn active(&self, store: &Store, principal: &Principal) -> ApiResult<bool> {
-        match principal.kind {
-            Kind::Device => store.read(|db| {
+        let now = store.clock.now();
+        store.read(|db| match principal.kind {
+            Kind::Device => {
                 Ok(db.query_row("SELECT 1 FROM devices WHERE id=?1", [&principal.id], |_| Ok(())).optional()?.is_some())
-            }),
-            Kind::Session => {
-                let now = store.clock.now();
-                store.read(|db| {
-                    let expires: Option<f64> = db
-                        .query_row("SELECT expires_at FROM sessions WHERE token_hash=?1", [&principal.id], |row| row.get(0))
-                        .optional()?;
-                    Ok(expires.is_some_and(|expires| expires > now))
-                })
             }
-            Kind::Local | Kind::Legacy => Ok(true),
-        }
+            Kind::Session => {
+                let expires: Option<f64> = db
+                    .query_row("SELECT expires_at FROM sessions WHERE token_hash=?1", [&principal.id], |row| row.get(0))
+                    .optional()?;
+                Ok(expires.is_some_and(|expires| expires > now))
+            }
+        })
     }
 
     // 기기
@@ -414,18 +402,15 @@ impl Auth {
 
     // 연결 코드
 
-    pub fn create_pairing(&self, store: &Store, principal: &Principal, name: &str, role: &str) -> ApiResult<Value> {
+    pub fn create_pairing(&self, store: &Store, name: &str) -> ApiResult<Value> {
         let code = new_code();
         let now = store.clock.now();
-        let entry = json!({
-            "id": new_id(), "name": name.trim(), "role": role, "created_by": principal.name,
-            "created_at": now, "expires_at": now + PAIRING_SECONDS,
-        });
+        let entry = json!({"id": new_id(), "name": name.trim(), "created_at": now, "expires_at": now + PAIRING_SECONDS});
         store.write(|db| {
             db.execute(
-                "INSERT INTO pairing_codes VALUES(?1,?2,?3,?4,?5,?6,?7,NULL,NULL)",
-                params![entry["id"].as_str(), self.hash("pair", &normalize_code(&code)), name.trim(), role,
-                        principal.name, now, now + PAIRING_SECONDS],
+                "INSERT INTO pairing_codes VALUES(?1,?2,?3,'device','host',?4,?5,NULL,NULL)",
+                params![entry["id"].as_str(), self.hash("pair", &normalize_code(&code)), name.trim(), now,
+                        now + PAIRING_SECONDS],
             )?;
             Ok(())
         })?;
@@ -438,15 +423,14 @@ impl Auth {
         let now = store.clock.now();
         store.read(|db| {
             let mut statement = db.prepare(
-                "SELECT id,name,role,created_by,created_at,expires_at FROM pairing_codes
+                "SELECT id,name,created_at,expires_at FROM pairing_codes
                  WHERE used_at IS NULL AND expires_at>?1 ORDER BY created_at",
             )?;
             let entries = statement
                 .query_map([now], |row| {
                     Ok(json!({
                         "id": row.get::<_, String>(0)?, "name": row.get::<_, String>(1)?,
-                        "role": row.get::<_, String>(2)?, "created_by": row.get::<_, String>(3)?,
-                        "created_at": row.get::<_, f64>(4)?, "expires_at": row.get::<_, f64>(5)?,
+                        "created_at": row.get::<_, f64>(2)?, "expires_at": row.get::<_, f64>(3)?,
                     }))
                 })?
                 .collect::<Result<Vec<_>, _>>()?;
@@ -468,21 +452,21 @@ impl Auth {
         let now = store.clock.now();
         let hashed = self.hash("pair", &normalize_code(code));
         let device = store.write(|db| {
-            let row: Option<(String, String, String, Option<f64>, f64)> = db
+            let row: Option<(String, String, Option<f64>, f64)> = db
                 .query_row(
-                    "SELECT id,name,role,used_at,expires_at FROM pairing_codes WHERE code_hash=?1",
+                    "SELECT id,name,used_at,expires_at FROM pairing_codes WHERE code_hash=?1",
                     [&hashed],
-                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
                 )
                 .optional()?;
-            let Some((entry_id, entry_name, role, used_at, expires_at)) = row else {
+            let Some((entry_id, entry_name, used_at, expires_at)) = row else {
                 return Err(not_found("pairing_code_invalid", "연결 코드를 확인해 주세요."));
             };
             if used_at.is_some() {
-                return Err(ApiError::new(410, "pairing_code_used", "이미 사용한 연결 코드입니다. 관리 화면에서 새 코드를 발급해 주세요."));
+                return Err(ApiError::new(410, "pairing_code_used", "이미 사용한 연결 코드입니다. 서버에서 새 코드를 발급해 주세요."));
             }
             if expires_at <= now {
-                return Err(ApiError::new(410, "pairing_code_expired", "연결 코드의 유효 시간이 지났습니다. 관리 화면에서 새 코드를 발급해 주세요."));
+                return Err(ApiError::new(410, "pairing_code_expired", "연결 코드의 유효 시간이 지났습니다. 서버에서 새 코드를 발급해 주세요."));
             }
             let device_name = [name.trim(), entry_name.as_str()]
                 .into_iter()
@@ -490,12 +474,12 @@ impl Auth {
                 .unwrap_or("새 기기")
                 .to_string();
             let device = json!({
-                "id": new_id(), "name": device_name, "role": role, "platform": platform.trim(),
+                "id": new_id(), "name": device_name, "platform": platform.trim(),
                 "created_at": now, "last_seen_at": now,
             });
             db.execute(
-                "INSERT INTO devices VALUES(?1,?2,?3,?4,?5,?6,?7)",
-                params![device["id"].as_str(), device_name, role, platform.trim(), self.hash("device", &token), now, now],
+                "INSERT INTO devices VALUES(?1,?2,'device',?3,?4,?5,?6)",
+                params![device["id"].as_str(), device_name, platform.trim(), self.hash("device", &token), now, now],
             )?;
             db.execute(
                 "UPDATE pairing_codes SET used_at=?1, device_id=?2 WHERE id=?3",

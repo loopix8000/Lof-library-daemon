@@ -21,7 +21,7 @@ use crate::models::{
     Capture, DeviceUpdate, DocumentMutation, Id, LibraryCreate, Login, Pair, PairingCreate, PasswordChange, PolicyUpdate,
     Resolve, Restore, Setup, Validate,
 };
-use crate::{AppState, Gate, SERVICE, VERSION};
+use crate::{AppState, SERVICE, VERSION};
 
 const MAX_CURSOR: i64 = i64::MAX;
 
@@ -44,22 +44,26 @@ pub fn router(state: AppState) -> Router {
         .route("/me", get(me))
         .route("/auth/logout", post(logout))
         .route_layer(middleware::from_fn_with_state(state.clone(), require_principal));
-    let admin = Router::new()
-        .route("/server", get(server_info))
-        .route("/password", put(change_password))
-        .route("/devices", get(devices))
-        .route("/devices/{device}", patch(rename_device).delete(revoke_device))
-        .route("/pairing-codes", get(pairings).post(create_pairing))
-        .route("/pairing-codes/{entry}", delete(cancel_pairing))
-        .route_layer(middleware::from_fn_with_state(state.clone(), require_admin));
-    let public = Router::new()
-        .route("/setup", post(setup))
-        .route("/auth/login", post(login))
-        .route("/pair", post(pair));
+    let mut v1 = sync.merge(Router::new().route("/pair", post(pair)));
+    // 웹 관리는 Docker에서만 연다. 설치형 앱은 로그인 없이 앱 안에서 직접 관리하므로 네트워크로 관리 API를 열지 않는다.
+    if state.config.web_admin {
+        let admin = Router::new()
+            .route("/server", get(server_info))
+            .route("/password", put(change_password))
+            .route("/devices", get(devices))
+            .route("/devices/{device}", patch(rename_device).delete(revoke_device))
+            .route("/pairing-codes", get(pairings).post(create_pairing))
+            .route("/pairing-codes/{entry}", delete(cancel_pairing))
+            .route_layer(middleware::from_fn_with_state(state.clone(), require_admin));
+        v1 = v1
+            .route("/setup", post(setup))
+            .route("/auth/login", post(login))
+            .nest("/admin", admin);
+    }
     Router::new()
         .route("/status", get(status))
         .route("/healthz", get(health))
-        .nest("/v1", sync.merge(public).nest("/admin", admin))
+        .nest("/v1", v1)
         .fallback(|| async { ApiError::new(404, "not_found", "요청한 주소를 찾을 수 없습니다.") })
         .layer(DefaultBodyLimit::max(limit))
         .with_state(state)
@@ -132,9 +136,9 @@ async fn require_principal(State(state): State<AppState>, mut request: Request, 
 async fn require_admin(State(state): State<AppState>, mut request: Request, next: Next) -> Result<Response, ApiError> {
     let principal = authenticate(&state, request.headers())
         .await?
-        .ok_or_else(|| ApiError::new(401, "unauthorized", "유효한 인증 키가 필요합니다."))?;
+        .ok_or_else(|| ApiError::new(401, "unauthorized", "관리자 로그인이 필요합니다."))?;
     if !principal.admin() {
-        return Err(ApiError::new(403, "forbidden", "관리자 권한이 필요합니다."));
+        return Err(ApiError::new(403, "forbidden", "관리자 로그인이 필요합니다."));
     }
     request.extensions_mut().insert(principal);
     Ok(next.run(request).await)
@@ -154,17 +158,6 @@ impl<S: Send + Sync> FromRequestParts<S> for ClientIp {
                 .map(|info| info.0.ip().to_string())
                 .unwrap_or_else(|| "unknown".into()),
         ))
-    }
-}
-
-/// 인증 키가 있으면 확인하고, 없어도 요청을 계속 처리한다.
-pub struct MaybePrincipal(pub Option<Principal>);
-
-impl FromRequestParts<AppState> for MaybePrincipal {
-    type Rejection = ApiError;
-
-    async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, ApiError> {
-        Ok(Self(authenticate(state, &parts.headers).await?))
     }
 }
 
@@ -222,14 +215,7 @@ struct HistoryQuery {
 // 상태 확인
 
 async fn status(State(state): State<AppState>) -> Response {
-    let (healthy, setup_required) = state
-        .blocking(|inner| {
-            let healthy = inner.store.healthy();
-            let setup = if healthy { inner.auth.setup_required(&inner.store).ok() } else { None };
-            Ok((healthy, setup))
-        })
-        .await
-        .unwrap_or((false, None));
+    let healthy = state.blocking(|inner| Ok(inner.store.healthy())).await.unwrap_or(false);
     let now = SystemTime::now().duration_since(UNIX_EPOCH).map(|elapsed| elapsed.as_secs() as i64).unwrap_or(0);
     let mut response = reply(
         if healthy { 200 } else { 503 },
@@ -237,7 +223,7 @@ async fn status(State(state): State<AppState>) -> Response {
             "service": SERVICE, "version": VERSION,
             "server_id": state.auth.server_id, "name": state.auth.server_name,
             "status": if healthy { "ok" } else { "error" }, "database": if healthy { "ok" } else { "error" },
-            "setup_required": setup_required, "time": iso_utc(now), "uptime_seconds": state.uptime_seconds(),
+            "time": iso_utc(now), "uptime_seconds": state.uptime_seconds(),
         }),
     );
     response.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
@@ -253,21 +239,26 @@ async fn health(State(state): State<AppState>) -> Response {
 
 // 인증과 기기 연결
 
-async fn setup(
-    State(state): State<AppState>,
-    ClientIp(source): ClientIp,
-    MaybePrincipal(principal): MaybePrincipal,
-    Valid(payload): Valid<Setup>,
-) -> ApiResult<Response> {
-    let session = state.setup(principal, payload.code, payload.password, &source).await?;
+async fn pair(State(state): State<AppState>, ClientIp(source): ClientIp, Valid(payload): Valid<Pair>) -> ApiResult<Response> {
+    let result = state.pair(&source, payload.code, payload.name, payload.platform).await?;
+    Ok(reply(201, result))
+}
+
+async fn me(State(state): State<AppState>, Extension(principal): Extension<Principal>) -> Json<Value> {
+    Json(json!({
+        "kind": principal.kind,
+        "id": if principal.kind == Kind::Device { Some(principal.id.clone()) } else { None },
+        "name": principal.name, "server": state.auth.identity(),
+    }))
+}
+
+async fn setup(State(state): State<AppState>, ClientIp(source): ClientIp, Valid(payload): Valid<Setup>) -> ApiResult<Response> {
+    let session = state.setup(&source, payload.code, payload.username, payload.password).await?;
     Ok(reply(201, session))
 }
 
-async fn login(State(state): State<AppState>, ClientIp(source): ClientIp, Valid(payload): Valid<Login>) -> ApiResult<Response> {
-    let session = state
-        .guarded(Gate::Login, &source, move |inner| inner.auth.login(&inner.store, &payload.password))
-        .await?;
-    Ok(reply(200, session))
+async fn login(State(state): State<AppState>, ClientIp(source): ClientIp, Valid(payload): Valid<Login>) -> ApiResult<Json<Value>> {
+    Ok(Json(state.login(&source, payload.username, payload.password).await?))
 }
 
 async fn logout(State(state): State<AppState>, Extension(principal): Extension<Principal>) -> ApiResult<Response> {
@@ -275,36 +266,18 @@ async fn logout(State(state): State<AppState>, Extension(principal): Extension<P
     Ok(no_content())
 }
 
-async fn pair(State(state): State<AppState>, ClientIp(source): ClientIp, Valid(payload): Valid<Pair>) -> ApiResult<Response> {
-    let result = state
-        .guarded(Gate::Pairing, &source, move |inner| {
-            inner.auth.pair(&inner.store, &payload.code, &payload.name, &payload.platform)
-        })
-        .await?;
-    Ok(reply(201, result))
-}
-
-async fn me(State(state): State<AppState>, Extension(principal): Extension<Principal>) -> Json<Value> {
-    Json(json!({
-        "kind": principal.kind, "role": principal.role,
-        "id": if principal.kind == Kind::Device { Some(principal.id.clone()) } else { None },
-        "name": principal.name, "server": state.auth.identity(),
-    }))
-}
-
 // 관리
-
-async fn server_info(State(state): State<AppState>) -> ApiResult<Json<Value>> {
-    Ok(Json(state.server_info().await?))
-}
 
 async fn change_password(
     State(state): State<AppState>,
     ClientIp(source): ClientIp,
-    Extension(principal): Extension<Principal>,
     Valid(payload): Valid<PasswordChange>,
 ) -> ApiResult<Json<Value>> {
-    Ok(Json(state.change_password(principal, payload.current_password, payload.new_password, &source).await?))
+    Ok(Json(state.change_password(&source, payload.current_password, payload.new_password).await?))
+}
+
+async fn server_info(State(state): State<AppState>) -> ApiResult<Json<Value>> {
+    Ok(Json(state.server_info().await?))
 }
 
 async fn devices(State(state): State<AppState>) -> ApiResult<Json<Value>> {
@@ -341,12 +314,11 @@ fn request_origin(headers: &HeaderMap) -> String {
 
 async fn create_pairing(
     State(state): State<AppState>,
-    Extension(principal): Extension<Principal>,
     headers: HeaderMap,
     Valid(payload): Valid<PairingCreate>,
 ) -> ApiResult<Response> {
     let server_url = payload.server_url.unwrap_or_else(|| request_origin(&headers));
-    let entry = state.create_pairing(principal, payload.name, payload.role, server_url).await?;
+    let entry = state.create_pairing(payload.name, server_url).await?;
     Ok(reply(201, entry))
 }
 

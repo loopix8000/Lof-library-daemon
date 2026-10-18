@@ -1,23 +1,35 @@
 const { invoke } = window.__TAURI__.core;
 
 const $ = (id) => document.getElementById(id);
-let latest = null;
-let settingsLoaded = false;
+const ADDRESS_KINDS = {
+  lan: { tag: "같은 네트워크", note: "같은 공유기에 연결된 기기에서 사용합니다." },
+  vpn: { tag: "VPN", note: "Tailscale 같은 VPN으로 연결된 기기에서 사용합니다." },
+  public: { tag: "인터넷", note: "외부에서 접속하려면 공유기에서 이 PC로 포트 포워딩을 설정해야 합니다." },
+  local: { tag: "이 PC", note: "이 PC의 Lof Writer에서 사용합니다." },
+};
+
+let status = null;
+let devices = [];
+let page = "overview";
 let editingDevice = null;
 let pairing = null;
 let pairingTimer = null;
 let toastTimer = null;
+let settingsLoaded = false;
 
-function toast(message) {
+// 공통
+
+function toast(message, error = false) {
   const element = $("toast");
   element.textContent = message;
+  element.classList.toggle("error", error);
   element.hidden = false;
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => { element.hidden = true; }, 3500);
 }
 
 function failure(error) {
-  toast(typeof error === "string" ? error : "작업을 완료하지 못했습니다.");
+  toast(typeof error === "string" ? error : "작업을 완료하지 못했습니다.", true);
 }
 
 async function run(button, action) {
@@ -32,13 +44,35 @@ async function run(button, action) {
   }
 }
 
+function element(tag, className, text) {
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  if (text !== undefined) node.textContent = text;
+  return node;
+}
+
+function button(label, className, onClick) {
+  const node = element("button", className, label);
+  node.type = "button";
+  node.addEventListener("click", onClick);
+  return node;
+}
+
+function icon(name) {
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  const use = document.createElementNS("http://www.w3.org/2000/svg", "use");
+  use.setAttribute("href", `#i-${name}`);
+  svg.append(use);
+  return svg;
+}
+
 function duration(seconds) {
   const days = Math.floor(seconds / 86400);
   const hours = Math.floor((seconds % 86400) / 3600);
   const minutes = Math.floor((seconds % 3600) / 60);
   if (days) return `${days}일 ${hours}시간`;
   if (hours) return `${hours}시간 ${minutes}분`;
-  return `${minutes}분`;
+  return `${Math.max(1, minutes)}분`;
 }
 
 function bytes(value) {
@@ -57,239 +91,351 @@ function seen(timestamp) {
 }
 
 function copy(value, message) {
-  navigator.clipboard.writeText(value).then(() => toast(message), () => toast("복사하지 못했습니다."));
+  navigator.clipboard.writeText(value).then(() => toast(message), () => toast("복사하지 못했습니다.", true));
 }
 
-function renderStatus(status) {
-  const running = status.state === "running";
-  const pill = $("status-pill");
-  pill.className = `pill ${status.state}`;
-  pill.textContent = { running: "실행 중", stopped: "중지됨", error: "오류" }[status.state];
-  $("start").hidden = running;
-  $("restart").hidden = !running;
-  $("stop").hidden = !running;
+function openModal(id) {
+  $(id).hidden = false;
+  const focus = $(id).querySelector("input:not([type=radio]), select, .primary");
+  if (focus) setTimeout(() => focus.focus(), 0);
+}
 
-  const error = $("error");
-  error.hidden = !status.message;
-  error.textContent = status.message || "";
+function closeModal(id) {
+  $(id).hidden = true;
+}
 
-  const server = status.server;
-  $("fact-name").textContent = server?.name ?? "-";
-  $("fact-version").textContent = server?.version ?? "-";
-  $("fact-uptime").textContent = server ? duration(server.uptime_seconds) : "-";
-  $("fact-storage").textContent = server ? bytes(server.storage_bytes) : "-";
-  $("fact-counts").textContent = server ? `${server.counts.libraries}개 · ${server.counts.documents}개` : "-";
-  $("fact-online").textContent = server ? `${server.connected_devices}개` : "-";
+function confirmDialog(title, message, label) {
+  $("confirm-title").textContent = title;
+  $("confirm-message").textContent = message;
+  $("confirm-ok").textContent = label;
+  $("confirm-modal").hidden = false;
+  $("confirm-cancel").focus();
+  return new Promise((resolve) => {
+    const finish = (value) => {
+      $("confirm-modal").hidden = true;
+      $("confirm-ok").onclick = null;
+      $("confirm-cancel").onclick = null;
+      resolve(value);
+    };
+    $("confirm-ok").onclick = () => finish(true);
+    $("confirm-cancel").onclick = () => finish(false);
+  });
+}
 
-  const list = $("addresses");
-  list.replaceChildren(...status.addresses.map((address) => {
-    const item = document.createElement("li");
-    const code = document.createElement("code");
-    code.textContent = address;
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "secondary";
-    button.textContent = "복사";
-    button.addEventListener("click", () => copy(address, "접속 주소를 복사했습니다."));
-    item.append(code, button);
-    return item;
-  }));
+// 화면
 
-  // 주소 목록이 바뀐 경우에만 다시 그려 선택 중인 목록이 닫히지 않게 한다.
-  const select = $("pairing-url");
-  const current = [...select.options].map((option) => option.value).join("\n");
-  if (current !== status.addresses.join("\n")) {
-    const selected = select.value;
-    select.replaceChildren(...status.addresses.map((address) => new Option(address, address)));
-    if (status.addresses.includes(selected)) select.value = selected;
+function showPage(name) {
+  page = name;
+  for (const item of document.querySelectorAll(".nav button")) {
+    item.setAttribute("aria-pressed", String(item.dataset.page === name));
   }
+  for (const section of document.querySelectorAll(".page")) {
+    section.hidden = section.id !== `page-${name}`;
+  }
+  $("page-" + name).parentElement.scrollTop = 0;
+}
 
-  const configured = server && !server.setup_required;
-  $("setup").hidden = !(server && server.setup_required);
-  $("password-form").hidden = !configured;
-  for (const element of $("pairing-form").elements) element.disabled = !running;
+function renderSidebar() {
+  const running = status.state === "running";
+  const server = status.server;
+  $("state-dot").className = `dot ${status.state}`;
+  $("state-label").textContent = { running: "실행 중", stopped: "중지됨", error: "실행 오류" }[status.state];
+  $("state-detail").textContent = running && server
+    ? `${duration(server.uptime_seconds)}째 실행 중`
+    : status.state === "error" ? "개요에서 원인을 확인해 주세요." : "동기화를 사용할 수 없습니다.";
+  const toggle = $("toggle-server");
+  toggle.textContent = running ? "중지" : "시작";
+  toggle.classList.toggle("primary", !running);
+  $("restart").hidden = !running;
+  $("version").textContent = server ? `${server.name} · v${server.version}` : "";
+  const count = $("device-count");
+  count.hidden = !running || devices.length === 0;
+  count.textContent = String(devices.length);
+}
 
+function renderAddresses() {
+  const items = status.addresses.map((address) => {
+    const kind = ADDRESS_KINDS[address.kind];
+    const item = element("li");
+    const text = element("div", "grow");
+    const title = element("span", "title mono", address.url);
+    text.append(title, element("span", "meta", kind.note));
+    const actions = element("div", "actions");
+    actions.append(element("span", "tag", kind.tag));
+    const copyButton = button("", "icon", () => copy(address.url, "접속 주소를 복사했습니다."));
+    copyButton.title = "복사";
+    copyButton.setAttribute("aria-label", `${address.url} 복사`);
+    copyButton.append(icon("copy"));
+    actions.append(copyButton);
+    item.append(text, actions);
+    return item;
+  });
+  if (status.settings.allow_lan && !status.addresses.some((address) => address.kind === "public")) {
+    const item = element("li");
+    const text = element("div", "grow");
+    const checking = status.public_ip === "checking";
+    text.append(
+      element("span", "title", checking ? "공인 IP 확인 중…" : "공인 IP를 확인하지 못했습니다"),
+      element("span", "meta", checking ? "인터넷에서 접속할 주소를 확인하고 있습니다." : "인터넷 연결을 확인한 뒤 다시 시도해 주세요."),
+    );
+    item.append(text);
+    if (!checking) {
+      const actions = element("div", "actions");
+      actions.append(button("다시 확인", "small", (event) => run(event.currentTarget, () => invoke("public_ip_refresh"))));
+      item.append(actions);
+    }
+    items.splice(items.length - 1, 0, item);
+  }
+  $("addresses").replaceChildren(...items);
+}
+
+function renderOverview() {
+  const running = status.state === "running";
+  const server = status.server;
+  $("error-callout").hidden = status.state !== "error";
+  $("error-message").textContent = status.message || "";
+  $("stat-libraries").textContent = server ? `${server.counts.libraries}개` : "-";
+  $("stat-documents").textContent = server ? `${server.counts.documents}개` : "-";
+  $("stat-online").textContent = server ? `${server.connected_devices}대` : "-";
+  $("stat-storage").textContent = server ? bytes(server.storage_bytes) : "-";
+  for (const add of document.querySelectorAll('[data-action="add-device"]')) add.disabled = !running;
+  renderAddresses();
+}
+
+function renderSettings() {
   if (!settingsLoaded) {
     $("settings-port").value = status.settings.port;
     $("settings-lan").checked = status.settings.allow_lan;
     $("settings-autostart").checked = status.autostart;
     settingsLoaded = true;
   }
-  $("data-dir").textContent = `데이터 폴더: ${status.data_dir}`;
+  $("port-apply").disabled = Number($("settings-port").value) === status.settings.port;
+  $("data-dir").textContent = status.data_dir;
 }
 
-function renderDevices(devices) {
-  $("devices-empty").hidden = devices.length > 0;
+function renderDevices() {
+  const running = status.state === "running";
+  $("devices-empty").hidden = !running || devices.length > 0;
   $("devices").replaceChildren(...devices.map((device) => {
-    const item = document.createElement("li");
-    const info = document.createElement("div");
-    info.className = "device-info";
-    const actions = document.createElement("div");
-    actions.className = "row";
-
+    const item = element("li");
+    const dot = element("span", device.connected ? "dot running" : "dot");
+    const text = element("div", "grow");
+    const actions = element("div", "actions");
     if (editingDevice === device.id) {
-      const input = document.createElement("input");
+      const input = element("input");
       input.value = device.name;
       input.maxLength = 100;
-      info.append(input);
-      const save = document.createElement("button");
-      save.type = "button";
-      save.textContent = "저장";
-      save.addEventListener("click", () => run(save, async () => {
+      const save = () => run(null, async () => {
         await invoke("device_rename", { id: device.id, name: input.value });
         editingDevice = null;
         toast("기기 이름을 바꿨습니다.");
-      }));
-      const cancel = document.createElement("button");
-      cancel.type = "button";
-      cancel.className = "secondary";
-      cancel.textContent = "취소";
-      cancel.addEventListener("click", () => { editingDevice = null; refresh(); });
-      actions.append(save, cancel);
+      });
+      input.addEventListener("keydown", (event) => {
+        if (event.key === "Enter") save();
+        if (event.key === "Escape") { editingDevice = null; renderDevices(); }
+      });
+      item.append(dot, input);
+      actions.append(
+        button("취소", "small", () => { editingDevice = null; renderDevices(); }),
+        button("저장", "small primary", save),
+      );
       setTimeout(() => input.focus(), 0);
     } else {
-      const name = document.createElement("span");
-      name.className = "device-name";
-      const dot = document.createElement("span");
-      dot.className = device.connected ? "dot on" : "dot";
-      name.append(dot, document.createTextNode(device.name));
-      const meta = document.createElement("span");
-      meta.className = "device-meta";
-      const role = device.role === "admin" ? "관리자 기기" : "일반 기기";
-      const platform = device.platform ? ` · ${device.platform}` : "";
-      meta.textContent = `${role}${platform} · ${device.connected ? "실시간 연결 중" : seen(device.last_seen_at)}`;
-      info.append(name, meta);
-
-      const rename = document.createElement("button");
-      rename.type = "button";
-      rename.className = "secondary";
-      rename.textContent = "이름 변경";
-      rename.addEventListener("click", () => { editingDevice = device.id; refresh(); });
-      const revoke = document.createElement("button");
-      revoke.type = "button";
-      revoke.className = "danger";
-      revoke.textContent = "연결 해제";
-      revoke.addEventListener("click", () => {
-        if (!confirm(`'${device.name}' 기기의 연결을 해제할까요? 이 기기는 연결 코드로 다시 연결해야 합니다.`)) return;
-        run(revoke, async () => {
-          await invoke("device_revoke", { id: device.id });
-          toast("연결을 해제했습니다.");
-        });
-      });
-      actions.append(rename, revoke);
+      const platform = device.platform ? `${device.platform} · ` : "";
+      text.append(
+        element("span", "title", device.name),
+        element("span", "meta", `${platform}${device.connected ? "실시간 연결 중" : seen(device.last_seen_at)}`),
+      );
+      item.append(dot, text);
+      actions.append(
+        button("이름 변경", "small", () => { editingDevice = device.id; renderDevices(); }),
+        button("연결 해제", "small danger-outline", async (event) => {
+          const target = event.currentTarget;
+          const ok = await confirmDialog(
+            "연결을 해제할까요?",
+            `‘${device.name}’은(는) 더 이상 동기화할 수 없습니다. 다시 사용하려면 연결 코드로 새로 연결해야 합니다.`,
+            "연결 해제",
+          );
+          if (!ok) return;
+          run(target, async () => {
+            await invoke("device_revoke", { id: device.id });
+            toast("연결을 해제했습니다.");
+          });
+        }),
+      );
     }
-    item.append(info, actions);
+    item.append(actions);
     return item;
   }));
 }
 
+function renderPairingAddresses() {
+  const select = $("pairing-url");
+  const urls = status.addresses.map((address) => address.url);
+  const current = [...select.options].map((option) => option.value).join("\n");
+  if (current !== urls.join("\n")) {
+    const selected = select.value;
+    select.replaceChildren(...status.addresses.map((address) =>
+      new Option(`${address.url}  (${ADDRESS_KINDS[address.kind].tag})`, address.url)));
+    if (urls.includes(selected)) select.value = selected;
+  }
+  $("pairing-local-hint").hidden = status.settings.allow_lan;
+}
+
 function renderPairing() {
   clearInterval(pairingTimer);
-  $("pairing-result").hidden = !pairing;
-  if (!pairing) return;
-  $("pairing-code").textContent = pairing.code;
-  $("pairing-connection").value = pairing.connection;
-  $("pairing-qr").innerHTML = pairing.qr_svg;
+  const stage = !pairing ? "form" : pairing.done ? "done" : "result";
+  $("pairing-form").hidden = stage !== "form";
+  $("pairing-result").hidden = stage !== "result";
+  $("pairing-done").hidden = stage !== "done";
+  if (stage === "done") {
+    $("pairing-done-title").textContent = `‘${pairing.done}’을(를) 연결했습니다`;
+    return;
+  }
+  if (stage !== "result") return;
+  $("pairing-code").textContent = pairing.entry.code;
+  $("pairing-qr").innerHTML = pairing.entry.qr_svg;
+  const expiry = $("pairing-expiry");
   const tick = () => {
-    const left = Math.round(pairing.expires_at - Date.now() / 1000);
+    const left = Math.round(pairing.entry.expires_at - Date.now() / 1000);
+    expiry.classList.toggle("expired", left <= 0);
     if (left <= 0) {
-      $("pairing-expiry").textContent = "유효 시간이 지났습니다. 새 코드를 발급해 주세요.";
+      expiry.textContent = "유효 시간이 지났습니다. 창을 닫고 새 코드를 발급해 주세요.";
       clearInterval(pairingTimer);
       return;
     }
-    const minutes = Math.floor(left / 60);
-    const seconds = String(left % 60).padStart(2, "0");
-    $("pairing-expiry").textContent = `${minutes}:${seconds} 후 만료 · ${pairing.role === "admin" ? "관리자 기기" : "일반 기기"}`;
+    expiry.textContent = `남은 시간 ${Math.floor(left / 60)}:${String(left % 60).padStart(2, "0")} · 한 번만 사용`;
   };
   tick();
   pairingTimer = setInterval(tick, 1000);
 }
 
+function checkPairingDone() {
+  if (!pairing || pairing.done) return;
+  const added = devices.find((device) => !pairing.known.has(device.id));
+  if (added) {
+    pairing.done = added.name;
+    renderPairing();
+  }
+}
+
 async function refresh() {
   try {
-    latest = await invoke("server_status");
-    renderStatus(latest);
-    if (latest.state === "running") {
-      if (editingDevice === null) {
-        const result = await invoke("devices_list");
-        renderDevices(result.devices);
-      }
+    status = await invoke("server_status");
+    if (status.state === "running") {
+      if (editingDevice === null) devices = (await invoke("devices_list")).devices;
     } else {
-      renderDevices([]);
+      devices = [];
+      editingDevice = null;
     }
+    renderSidebar();
+    renderOverview();
+    renderSettings();
+    if (editingDevice === null) renderDevices();
+    renderPairingAddresses();
+    checkPairingDone();
   } catch (error) {
     failure(error);
   }
 }
 
-$("start").addEventListener("click", (event) => run(event.currentTarget, () => invoke("server_start")));
-$("restart").addEventListener("click", (event) => run(event.currentTarget, () => invoke("server_restart")));
-$("stop").addEventListener("click", (event) => run(event.currentTarget, () => invoke("server_stop")));
-$("open-data").addEventListener("click", () => invoke("open_data_dir").catch(failure));
-$("open-log").addEventListener("click", () => invoke("open_log").catch(failure));
+// 이벤트
 
-$("setup-form").addEventListener("submit", (event) => {
-  event.preventDefault();
-  const password = $("setup-password").value;
-  if (password !== $("setup-confirm").value) {
-    toast("비밀번호 확인이 일치하지 않습니다.");
-    return;
+for (const item of document.querySelectorAll(".nav button")) {
+  item.addEventListener("click", () => showPage(item.dataset.page));
+}
+
+$("toggle-server").addEventListener("click", (event) => run(event.currentTarget, async () => {
+  if (status?.state === "running") {
+    const ok = await confirmDialog("서버를 중지할까요?", "중지하는 동안 연결된 기기는 동기화할 수 없습니다.", "중지");
+    if (ok) await invoke("server_stop");
+  } else {
+    await invoke("server_start");
   }
-  run(event.submitter, async () => {
-    await invoke("admin_setup", { password });
-    event.target.reset();
-    toast("관리자 비밀번호를 설정했습니다.");
-  });
-});
+}));
+$("restart").addEventListener("click", (event) => run(event.currentTarget, async () => {
+  await invoke("server_restart");
+  toast("서버를 다시 시작했습니다.");
+}));
 
-$("password-form").addEventListener("submit", (event) => {
-  event.preventDefault();
-  run(event.submitter, async () => {
-    await invoke("admin_password", { password: $("password-new").value });
-    event.target.reset();
-    toast("관리자 비밀번호를 바꿨습니다.");
-  });
-});
-
-$("settings-form").addEventListener("submit", (event) => {
-  event.preventDefault();
-  run(event.submitter, async () => {
-    await invoke("settings_save", {
-      port: Number($("settings-port").value),
-      allowLan: $("settings-lan").checked,
-      autostart: $("settings-autostart").checked,
+document.addEventListener("click", (event) => {
+  const target = event.target.closest("[data-action]");
+  if (!target) return;
+  const action = target.dataset.action;
+  if (action === "add-device") {
+    pairing = null;
+    $("pairing-form").reset();
+    renderPairing();
+    openModal("pairing-modal");
+  } else if (action === "close-pairing") {
+    closeModal("pairing-modal");
+    clearInterval(pairingTimer);
+    pairing = null;
+  } else if (action === "cancel-pairing" && pairing) {
+    run(target, async () => {
+      await invoke("pairing_cancel", { id: pairing.entry.id });
+      closeModal("pairing-modal");
+      pairing = null;
+      toast("연결 코드를 취소했습니다.");
     });
-    settingsLoaded = false;
-    toast("설정을 저장했습니다.");
-  });
+  } else if (action === "open-data") {
+    invoke("open_data_dir").catch(failure);
+  } else if (action === "open-log") {
+    invoke("open_log").catch(failure);
+  }
+});
+
+document.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape") return;
+  if (!$("confirm-modal").hidden) $("confirm-cancel").click();
+  else if (!$("pairing-modal").hidden) document.querySelector('#pairing-modal [data-action="close-pairing"]').click();
 });
 
 $("pairing-form").addEventListener("submit", (event) => {
   event.preventDefault();
   run(event.submitter, async () => {
-    pairing = await invoke("pairing_create", {
+    const known = new Set(devices.map((device) => device.id));
+    const entry = await invoke("pairing_create", {
       name: $("pairing-name").value,
-      role: $("pairing-role").value,
       serverUrl: $("pairing-url").value,
     });
+    pairing = { entry, known, done: null };
     renderPairing();
   });
 });
 
 $("pairing-copy").addEventListener("click", () => {
-  if (pairing) copy(pairing.connection, "연결 정보를 복사했습니다.");
+  if (pairing) copy(pairing.entry.connection, "연결 정보를 복사했습니다.");
 });
 
-$("pairing-cancel").addEventListener("click", (event) => {
-  if (!pairing) return;
-  run(event.currentTarget, async () => {
-    try {
-      await invoke("pairing_cancel", { id: pairing.id });
-    } finally {
-      pairing = null;
-      renderPairing();
-    }
-  });
+async function saveSettings(message) {
+  try {
+    await invoke("settings_save", {
+      port: Number($("settings-port").value),
+      allowLan: $("settings-lan").checked,
+      autostart: $("settings-autostart").checked,
+    });
+    toast(message);
+  } finally {
+    // 저장에 실패해도 화면을 실제 설정으로 되돌린다.
+    settingsLoaded = false;
+  }
+}
+
+$("settings-port").addEventListener("input", () => {
+  $("port-apply").disabled = !status || Number($("settings-port").value) === status.settings.port;
+});
+$("port-form").addEventListener("submit", (event) => {
+  event.preventDefault();
+  run($("port-apply"), () => saveSettings("포트를 바꾸고 서버를 다시 시작했습니다."));
+});
+$("settings-lan").addEventListener("change", (event) => {
+  const allowed = event.target.checked;
+  run(null, () => saveSettings(allowed ? "다른 기기에서 접속할 수 있습니다." : "이 PC에서만 접속할 수 있습니다."));
+});
+$("settings-autostart").addEventListener("change", (event) => {
+  const enabled = event.target.checked;
+  run(null, () => saveSettings(enabled ? "PC를 시작하면 자동으로 실행합니다." : "자동 실행을 껐습니다."));
 });
 
 refresh();
