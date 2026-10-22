@@ -38,6 +38,8 @@ pub struct Realtime {
     statistics: Mutex<HashMap<String, Value>>,
     peer_status: Mutex<HashMap<String, Value>>,
     versions: Mutex<HashMap<String, u64>>,
+    // 삭제는 파일 요청과 Library 간 비교가 끝난 뒤 독점 실행한다.
+    file_activity: Mutex<HashMap<String, Arc<tokio::sync::RwLock<()>>>>,
     wake: tokio::sync::Notify,
 }
 fn read_key(store: &Store, key: &str) -> Result<Option<String>> {
@@ -72,6 +74,17 @@ impl Realtime {
             .ok_or("장치 키가 없습니다.")?
             .parse::<SecretKey>()
             .map_err(|e| e.to_string())?;
+        let file_activity = state["libraries"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|library| {
+                Some((
+                    library["id"].as_str()?.to_string(),
+                    Arc::new(tokio::sync::RwLock::new(())),
+                ))
+            })
+            .collect();
         let rt = Arc::new(Self {
             store,
             base,
@@ -88,6 +101,7 @@ impl Realtime {
             statistics: Mutex::new(HashMap::new()),
             peer_status: Mutex::new(HashMap::new()),
             versions: Mutex::new(HashMap::new()),
+            file_activity: Mutex::new(file_activity),
             wake: tokio::sync::Notify::new(),
         });
         rt.save(&rt.state.lock().unwrap())?;
@@ -102,7 +116,9 @@ impl Realtime {
     /// 그룹 방식으로 바꾸면서 이전 1:1 기기 연결과 비교 기록을 한 번 초기화한다. 서재와 원본 파일은 유지한다.
     fn migrate(base: &std::path::Path, store: &Store) -> Result<Value> {
         let Some(text) = read_key(store, "realtime-v1")? else {
-            return Ok(json!({"secret":hex::encode(SecretKey::generate().to_bytes()),"libraries":[],"resetNotice":false}));
+            return Ok(
+                json!({"secret":hex::encode(SecretKey::generate().to_bytes()),"libraries":[],"resetNotice":false}),
+            );
         };
         let old: Value =
             serde_json::from_str(&text).map_err(|_| "실시간 동기화 설정을 읽지 못했습니다.")?;
@@ -112,7 +128,9 @@ impl Realtime {
             .into_iter()
             .flatten()
             .filter_map(|library| {
-                let id = library["id"].as_str().filter(|id| Uuid::parse_str(id).is_ok())?;
+                let id = library["id"]
+                    .as_str()
+                    .filter(|id| Uuid::parse_str(id).is_ok())?;
                 reset |= library["peers"].as_array().is_some_and(|p| !p.is_empty());
                 match std::fs::remove_dir_all(base.join(id).join(".lof").join("replicas")) {
                     Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
@@ -252,6 +270,10 @@ impl Realtime {
         self.save(&next)?;
         *state = next;
         drop(state);
+        self.file_activity
+            .lock()
+            .unwrap()
+            .insert(id.clone(), Arc::new(tokio::sync::RwLock::new(())));
         self.dirty.lock().unwrap().insert(id.clone());
         self.wake.notify_waiters();
         Ok(json!({"id":id,"name":name,"path":directory}))
@@ -301,6 +323,66 @@ impl Realtime {
         storage::path(&root, "경로확인")?;
         Ok(root)
     }
+    fn activity(&self, id: &str) -> Result<Arc<tokio::sync::RwLock<()>>> {
+        self.file_activity
+            .lock()
+            .unwrap()
+            .get(id)
+            .cloned()
+            .ok_or_else(|| "서재를 찾을 수 없습니다.".into())
+    }
+    /// 진행 중인 파일 작업을 마친 뒤 그룹에서 나가고 이 Library의 원본만 삭제한다.
+    pub async fn delete_library(self: &Arc<Self>, id: &str) -> Result<()> {
+        let activity = self.activity(id)?.write_owned().await;
+        let rt = self.clone();
+        let id = id.to_string();
+        tokio::task::spawn_blocking(move || {
+            let _activity = activity;
+            let root = rt.library_path(&id)?;
+            // 재귀 삭제 대상은 데이터 폴더 바로 아래의 실제 서재 폴더여야 한다.
+            let base = rt.base.canonicalize().map_err(|e| e.to_string())?;
+            match root.canonicalize() {
+                Ok(path) if path.parent() == Some(base.as_path()) => {}
+                Ok(_) => return Err("서재 폴더가 데이터 폴더 밖에 있습니다.".into()),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e.to_string()),
+            }
+            rt.leave(&id)?;
+            let mut state = rt.state.lock().unwrap();
+            let mut next = state.clone();
+            next["libraries"]
+                .as_array_mut()
+                .ok_or("서재 설정 오류")?
+                .retain(|library| library["id"].as_str() != Some(&id));
+            // 실패하면 탈퇴한 서재 항목을 남겨 삭제를 다시 시도할 수 있게 한다.
+            match std::fs::remove_dir_all(&root) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => {
+                    return Err(format!(
+                    "그룹에서 나갔지만 서재 폴더를 삭제하지 못했습니다. 다시 시도해 주세요: {e}"
+                ))
+                }
+            }
+            rt.save(&next)?;
+            *state = next;
+            drop(state);
+            rt.invites.lock().unwrap().remove(&id);
+            rt.leases.lock().unwrap().remove(&id);
+            rt.dirty.lock().unwrap().remove(&id);
+            rt.statistics.lock().unwrap().remove(&id);
+            rt.versions.lock().unwrap().remove(&id);
+            rt.file_activity.lock().unwrap().remove(&id);
+            rt.peer_status
+                .lock()
+                .unwrap()
+                .retain(|key, _| !key.starts_with(&format!("{id}:")));
+            rt.wake.notify_waiters();
+            Ok(())
+        })
+        .await
+        .map_err(|_| "서재 삭제를 처리하지 못했습니다.".to_string())?
+    }
     pub fn cancel_invite(&self, id: &str) {
         self.invites.lock().unwrap().remove(id);
     }
@@ -317,7 +399,10 @@ impl Realtime {
             .iter_mut()
             .find(|l| l["id"].as_str() == Some(vault))
             .ok_or("서재가 없습니다.")?;
-        if group_of(library).and_then(|g| g.member(id).cloned()).is_none() {
+        if group_of(library)
+            .and_then(|g| g.member(id).cloned())
+            .is_none()
+        {
             return Err("기기를 찾을 수 없습니다.".into());
         }
         // 기기 이름은 이 Library에서만 쓰는 별칭으로 저장한다.
@@ -345,6 +430,7 @@ impl Realtime {
             .as_str()
             .ok_or("가입할 서재를 선택해 주세요.")?
             .to_string();
+        let _activity = self.activity(&local)?.read_owned().await;
         self.library_path(&local)?;
         let own = self.own();
         self.check_join(&local, &ticket.group, &own)?;
@@ -355,7 +441,8 @@ impl Realtime {
         let endpoint = connection.remote_id().to_string();
         connection.close(0u8.into(), b"joined");
         let response = response?;
-        let rejected = || "페어링 코드와 상대 그룹 정보가 다릅니다. 새 코드를 받아 주세요.".to_string();
+        let rejected =
+            || "페어링 코드와 상대 그룹 정보가 다릅니다. 새 코드를 받아 주세요.".to_string();
         let mut joined = Group::from_secret(response.meta["secret"].as_str().unwrap_or(""))
             .map_err(|_| rejected())?;
         if joined.id() != ticket.group
@@ -412,6 +499,15 @@ impl Realtime {
         Ok(())
     }
     fn refresh_statistics(&self, id: &str) {
+        let Ok(activity) = self.activity(id) else {
+            return;
+        };
+        let Ok(_activity) = activity.try_read() else {
+            return;
+        };
+        if self.library_path(id).is_err() {
+            return;
+        }
         fn walk(
             root: &std::path::Path,
             folder: &std::path::Path,
@@ -469,6 +565,9 @@ impl Realtime {
                 .unwrap_or("")
                 .to_string(),
         };
+        let activity = self.activity(&id)?;
+        let _activity = activity.blocking_read();
+        self.library_path(&id)?;
         std::fs::create_dir_all(self.base.join(&id)).map_err(|e| e.to_string())?;
         let own = self.own();
         let group = self.edit_group(&id, |group, library| {
@@ -705,7 +804,12 @@ impl Realtime {
             for (library, _) in &groups {
                 let version = versions.get(library).copied().unwrap_or(0);
                 if announced.get(library) != Some(&version) {
-                    self.announce(library, Announcement::Changed { endpoint: own.clone() });
+                    self.announce(
+                        library,
+                        Announcement::Changed {
+                            endpoint: own.clone(),
+                        },
+                    );
                     announced.insert(library.clone(), version);
                 }
             }
@@ -722,8 +826,8 @@ impl Realtime {
                     let node = node.clone();
                     let closing = closing.clone();
                     entry.insert(tokio::spawn(async move {
-                            rt.link(node, peer, closing).await;
-                        }));
+                        rt.link(node, peer, closing).await;
+                    }));
                 }
             }
             tokio::select! {_=closing.cancelled()=>break,_=tokio::time::sleep(Duration::from_secs(5))=>{},_=self.wake.notified()=>{}}
@@ -819,6 +923,10 @@ impl Realtime {
                 }
                 let conn = connection.as_ref().unwrap();
                 if peer["storage"] == true && node.endpoint.id().to_string() < endpoint {
+                    let _activity = self.activity(&local)?.read_owned().await;
+                    if !self.targets().iter().any(|p| p["key"] == key) {
+                        return Err("이 서재의 동기화 연결이 해제되었습니다.".into());
+                    }
                     let owner = format!("outgoing:{}", Uuid::new_v4());
                     {
                         let mut leases = self.leases.lock().unwrap();
@@ -936,6 +1044,10 @@ impl Realtime {
             })
             .map(|(id, _)| id.clone())
             .ok_or("페어링 코드가 만료되었거나 올바르지 않습니다.")?;
+        let activity = self.activity(&id)?;
+        let _activity = activity
+            .try_read()
+            .map_err(|_| "서재 삭제 중입니다.".to_string())?;
         let remote = req["vault"]
             .as_str()
             .filter(|v| Uuid::parse_str(v).is_ok())
@@ -989,6 +1101,12 @@ impl Host for Realtime {
         if Uuid::parse_str(target).is_err() {
             return Err("서재 식별자 오류".into());
         }
+        // 삭제 대기 중에는 새 요청을 거부한다. 비교 작업이 보낸 요청을 기다리는
+        // 동안 여기서 잠금을 기다리면 양쪽 피어의 삭제와 비교가 서로 막힐 수 있다.
+        let activity = self.activity(target)?;
+        let _activity = activity
+            .try_read()
+            .map_err(|_| "서재 삭제 중입니다. 동기화를 다시 연결해 주세요.".to_string())?;
         if op == "hello" || op == "members" {
             // 처음 보는 장치도 현재 구성원이 서명한 가입 기록을 가져오면 인증할 수 있다.
             let incoming: Vec<Member> =
@@ -1128,5 +1246,200 @@ impl Drop for OutgoingLease {
         {
             leases.remove(&self.library);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Fixture {
+        rt: Arc<Realtime>,
+        _directory: TestDirectory,
+    }
+    struct TestDirectory(PathBuf);
+    impl Drop for TestDirectory {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    impl Fixture {
+        fn new() -> Self {
+            let directory =
+                std::env::temp_dir().join(format!("lof-delete-test-{}", Uuid::new_v4()));
+            let store = Arc::new(Store::open(&directory).unwrap());
+            let rt = Realtime::new(directory.join("realtime"), store).unwrap();
+            Self {
+                rt,
+                _directory: TestDirectory(directory),
+            }
+        }
+        fn library(&self) -> String {
+            let library = self.rt.create_library("테스트 서재").unwrap();
+            let id = library["id"].as_str().unwrap().to_string();
+            std::fs::write(self.rt.base.join(&id).join("원고.md"), "보존할 원고").unwrap();
+            id
+        }
+        fn group(&self, id: &str) -> (String, String) {
+            let key = SecretKey::generate();
+            let peer = key.public().to_string();
+            let vault = Uuid::new_v4().to_string();
+            self.rt
+                .edit_group(id, |group, _| {
+                    let mut current = Group::create(&self.rt.key, id, "Library", true);
+                    current.update(&self.rt.key, &peer, &vault, "Writer", false, false);
+                    *group = Some(current);
+                    Ok(())
+                })
+                .unwrap();
+            (peer, vault)
+        }
+        fn persisted(&self) -> Value {
+            serde_json::from_str(&read_key(&self.rt.store, "realtime-v2").unwrap().unwrap())
+                .unwrap()
+        }
+    }
+    #[tokio::test]
+    async fn deletes_only_selected_library_and_persists_removal() {
+        let fixture = Fixture::new();
+        let id = fixture.library();
+        let other = fixture.library();
+        fixture.rt.invites.lock().unwrap().insert(
+            id.clone(),
+            ("token".into(), Instant::now() + Duration::from_secs(60)),
+        );
+        fixture.rt.leases.lock().unwrap().insert(
+            id.clone(),
+            ("session".into(), Instant::now() + Duration::from_secs(60)),
+        );
+        assert_eq!(
+            crate::control::action(fixture.rt.clone(), "delete", json!({"id":id}))
+                .await
+                .unwrap(),
+            true
+        );
+        assert!(!fixture.rt.base.join(&id).exists());
+        assert_eq!(
+            std::fs::read_to_string(fixture.rt.base.join(&other).join("원고.md")).unwrap(),
+            "보존할 원고"
+        );
+        assert_eq!(
+            fixture.persisted()["libraries"].as_array().unwrap().len(),
+            1
+        );
+        assert!(fixture.rt.library_path(&id).is_err());
+        assert!(!fixture.rt.invites.lock().unwrap().contains_key(&id));
+        assert!(!fixture.rt.leases.lock().unwrap().contains_key(&id));
+    }
+
+    #[tokio::test]
+    async fn grouped_delete_rejects_existing_peer_session() {
+        let fixture = Fixture::new();
+        let id = fixture.library();
+        let (peer, vault) = fixture.group(&id);
+        fixture
+            .rt
+            .handle(
+                &peer,
+                "session",
+                Message::json(json!({"op":"begin","vault":vault,"target":id})),
+            )
+            .unwrap();
+        fixture.rt.delete_library(&id).await.unwrap();
+        for op in ["inventory", "read", "write", "remove", "begin"] {
+            assert!(fixture
+                .rt
+                .handle(
+                    &peer,
+                    "session",
+                    Message::json(json!({"op":op,"vault":vault,"target":id,"path":"원고.md"}))
+                )
+                .is_err());
+        }
+        assert!(!fixture.rt.base.join(&id).exists());
+        assert!(fixture.persisted()["libraries"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn waits_for_file_activity_then_rejects_new_requests() {
+        let fixture = Fixture::new();
+        let id = fixture.library();
+        let (peer, vault) = fixture.group(&id);
+        let other = fixture.library();
+        let (other_peer, other_vault) = fixture.group(&other);
+        let activity = fixture.rt.activity(&id).unwrap().read_owned().await;
+        let deletion = fixture.rt.delete_library(&id);
+        tokio::pin!(deletion);
+        // poll 한 뒤에도 파일 작업이 진행 중이면 삭제가 시작되지 않아야 한다.
+        assert!(
+            tokio::time::timeout(Duration::from_millis(30), &mut deletion)
+                .await
+                .is_err()
+        );
+        assert!(fixture.rt.base.join(&id).join("원고.md").exists());
+        assert!(fixture
+            .rt
+            .handle(
+                &peer,
+                "session",
+                Message::json(json!({"op":"begin","vault":vault,"target":id}))
+            )
+            .is_err());
+        assert!(fixture
+            .rt
+            .handle(
+                &other_peer,
+                "other-session",
+                Message::json(json!({"op":"begin","vault":other_vault,"target":other}))
+            )
+            .is_ok());
+        drop(activity);
+        deletion.await.unwrap();
+        assert!(!fixture.rt.base.join(&id).exists());
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn failed_folder_removal_keeps_detached_library_for_retry() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let fixture = Fixture::new();
+        let id = fixture.library();
+        fixture.group(&id);
+        let root = fixture.rt.base.join(&id);
+        let locked = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(root.join("원고.md"))
+            .unwrap();
+        assert!(fixture.rt.delete_library(&id).await.is_err());
+        assert!(root.join("원고.md").is_file());
+        assert_eq!(fixture.persisted()["libraries"][0]["group"], Value::Null);
+        assert!(fixture.rt.targets().is_empty());
+        drop(locked);
+        fixture.rt.delete_library(&id).await.unwrap();
+        assert!(fixture.persisted()["libraries"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn rejects_unknown_and_traversal_ids_and_handles_missing_folder() {
+        let fixture = Fixture::new();
+        let id = fixture.library();
+        for invalid in ["", "..", "../realtime", &Uuid::new_v4().to_string()] {
+            assert!(fixture.rt.delete_library(invalid).await.is_err());
+        }
+        assert!(fixture.rt.base.join(&id).join("원고.md").exists());
+        std::fs::remove_file(fixture.rt.base.join(&id).join("원고.md")).unwrap();
+        std::fs::remove_dir(fixture.rt.base.join(&id)).unwrap();
+        fixture.rt.delete_library(&id).await.unwrap();
+        assert!(fixture.persisted()["libraries"]
+            .as_array()
+            .unwrap()
+            .is_empty());
     }
 }

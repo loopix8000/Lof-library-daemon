@@ -15,6 +15,8 @@ Windows 설치 파일은 [GitHub 릴리즈](https://github.com/loopix8000/Lof-li
 3. 이미 있는 그룹에 가입하려면 **그룹 가입**에서 내 서재를 고르고 그룹에 속한 기기의 코드를 입력합니다.
 4. **그룹 기기**에서 연결 상태와 최근 동기화, 기기 이름을 확인하거나 기기를 그룹에서 제거합니다. **서재** 화면의 **그룹 나가기**로 서재를 그룹에서 뺄 수 있습니다.
 
+**서재 삭제**는 그룹에서 탈퇴한 뒤 이 Lof Library의 서재와 파일을 영구 삭제합니다. 다른 연결 기기의 서재와 파일은 유지됩니다.
+
 초대는 서재별로 발급하며 10분 동안 한 번만 사용할 수 있습니다. 처음 가입할 때는 코드를 만든 기기가 켜져 있어야 하지만, 이후에는 그 기기가 꺼져 있어도 나머지 기기끼리 동기화합니다. Library는 기기가 꺼져 있는 동안 원본을 보관해 동기화를 이어 주는 선택적인 상시 기기입니다.
 
 이전 버전의 1:1 기기 연결은 업데이트할 때 한 번 초기화되며, 처음 실행하면 안내 창을 표시합니다. 서재와 원본 파일은 유지합니다. 모든 기기를 업데이트한 뒤 한 기기에서 초대 코드를 만들어 나머지 기기를 다시 가입시켜 주세요.
@@ -75,6 +77,7 @@ lof-library-server --data-dir <폴더> create <이름>    서재 생성
 lof-library-server --data-dir <폴더> invite <서재>    QR·그룹 페어링 코드(그룹이 없으면 생성)
 lof-library-server --data-dir <폴더> pair <서재>      다른 기기의 코드로 그룹 가입
 lof-library-server --data-dir <폴더> leave <서재>     서재를 그룹에서 빼기
+lof-library-server --data-dir <폴더> delete <서재>    그룹 탈퇴 후 이 Library의 서재·파일 삭제
 lof-library-server --data-dir <폴더> devices         그룹 기기
 lof-library-server --data-dir <폴더> revoke <서재> <기기 공개키>  기기를 그룹에서 제거
 lof-library-server --data-dir <폴더> cancel-invite <서재>  발급한 초대 취소

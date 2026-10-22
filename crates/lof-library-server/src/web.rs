@@ -313,6 +313,7 @@ async fn manage(State(web): State<Web>, headers: HeaderMap, Json(body): Json<Val
     if !matches!(
         action.as_str(),
         "create"
+            | "delete"
             | "rename"
             | "invite"
             | "cancelInvite"

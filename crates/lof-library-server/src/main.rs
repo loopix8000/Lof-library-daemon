@@ -42,6 +42,10 @@ enum Command {
     Leave {
         library_id: String,
     },
+    /// 그룹에서 나간 뒤 이 Library의 서재와 원본 파일을 삭제한다. 다른 기기의 파일은 유지한다.
+    Delete {
+        library_id: String,
+    },
     CancelInvite {
         library_id: String,
     },
@@ -125,6 +129,7 @@ async fn main() -> ExitCode {
                     manage(&cli, "pair", json!({"id":library_id,"code":code}))?
                 }
                 Command::Leave { library_id } => manage(&cli, "leave", json!({"id":library_id}))?,
+                Command::Delete { library_id } => manage(&cli, "delete", json!({"id":library_id}))?,
                 Command::CancelInvite { library_id } => {
                     manage(&cli, "cancelInvite", json!({"id":library_id}))?
                 }

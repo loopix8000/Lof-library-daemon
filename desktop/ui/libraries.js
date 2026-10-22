@@ -20,6 +20,12 @@ window.libraryViews = (() => {
         if (library.group) actions.append(button("그룹 나가기", async () => {
           if (await app.confirm("동기화 그룹에서 나갈까요?", `‘${library.name}’ 서재가 그룹의 다른 기기와 더 이상 동기화하지 않습니다. 원본 파일은 이 Library에 그대로 남습니다.`, "그룹 나가기")) await app.manage("leave", { id: library.id });
         }, true));
+        actions.append(button("서재 삭제", async () => {
+          if (await app.confirm("서재를 삭제할까요?", `‘${library.name}’ 서재를 그룹에서 탈퇴한 뒤, 이 Lof Library에 보관된 서재와 파일을 영구 삭제합니다. 다른 연결 기기의 서재와 파일은 그대로 유지됩니다.`, "서재 삭제")) {
+            await app.manage("delete", { id: library.id });
+            app.toast("서재를 삭제했습니다.");
+          }
+        }, true));
         for (const child of actions.children) child.disabled = !online;
         row.append(details, actions); return row;
       }));

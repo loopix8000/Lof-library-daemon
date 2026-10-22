@@ -27,6 +27,11 @@ pub async fn action(peer: Arc<Realtime>, method: &str, args: Value) -> Result<Va
     if method == "pair" {
         return peer.pair(args).await;
     }
+    if method == "delete" {
+        peer.delete_library(args["id"].as_str().unwrap_or(""))
+            .await?;
+        return Ok(json!(true));
+    }
     let method = method.to_string();
     tokio::task::spawn_blocking(move || match method.as_str() {
         "status" => Ok(peer.info()),
