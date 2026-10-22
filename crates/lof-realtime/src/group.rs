@@ -254,6 +254,7 @@ pub enum Announcement {
 pub enum Event {
     Announcement(Announcement),
     Neighbor(String),
+    SubscriptionClosed,
 }
 
 /// 그룹 주제 구독. 값을 버리면 주제에서 나간다.
@@ -288,6 +289,7 @@ impl Subscription {
                     GossipEvent::NeighborDown(_) => {}
                 }
             }
+            events(Event::SubscriptionClosed);
         });
         Ok(Self {
             group: group.id(),

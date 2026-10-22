@@ -1,7 +1,7 @@
 {
   "name": "lof-library-desktop",
   "productName": "Lof Library",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "private": true,
   "description": "Lof Writer 서재 동기화 서버 설치형 앱",
   "scripts": {

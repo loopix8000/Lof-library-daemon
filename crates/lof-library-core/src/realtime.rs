@@ -38,6 +38,13 @@ pub struct Realtime {
     statistics: Mutex<HashMap<String, Value>>,
     peer_status: Mutex<HashMap<String, Value>>,
     versions: Mutex<HashMap<String, u64>>,
+    // 상대 Library가 직접 알린 변경. 다른 구성원에게 다시 알리지 않고 그 연결만 비교한다.
+    requests: Mutex<HashMap<String, u64>>,
+    // 대기 중인 변경을 보낸 연결. 다른 연결과 섞이면 None으로 두어 모두에게 알린다.
+    origins: Mutex<HashMap<String, Option<String>>>,
+    // 연결별로 다시 알리지 않아도 되는 서재 버전.
+    skips: Mutex<HashMap<String, u64>>,
+    lost: Mutex<HashSet<String>>,
     // 삭제는 파일 요청과 Library 간 비교가 끝난 뒤 독점 실행한다.
     file_activity: Mutex<HashMap<String, Arc<tokio::sync::RwLock<()>>>>,
     wake: tokio::sync::Notify,
@@ -59,6 +66,12 @@ fn group_of(library: &Value) -> Option<Group> {
 fn spawn(task: impl std::future::Future<Output = ()> + Send + 'static) {
     if let Ok(handle) = tokio::runtime::Handle::try_current() {
         handle.spawn(task);
+    }
+}
+async fn until(deadline: Option<Instant>) {
+    match deadline {
+        Some(deadline) => tokio::time::sleep_until(deadline.into()).await,
+        None => std::future::pending().await,
     }
 }
 impl Realtime {
@@ -101,6 +114,10 @@ impl Realtime {
             statistics: Mutex::new(HashMap::new()),
             peer_status: Mutex::new(HashMap::new()),
             versions: Mutex::new(HashMap::new()),
+            requests: Mutex::new(HashMap::new()),
+            origins: Mutex::new(HashMap::new()),
+            skips: Mutex::new(HashMap::new()),
+            lost: Mutex::new(HashSet::new()),
             file_activity: Mutex::new(file_activity),
             wake: tokio::sync::Notify::new(),
         });
@@ -372,6 +389,15 @@ impl Realtime {
             rt.dirty.lock().unwrap().remove(&id);
             rt.statistics.lock().unwrap().remove(&id);
             rt.versions.lock().unwrap().remove(&id);
+            rt.requests
+                .lock()
+                .unwrap()
+                .retain(|key, _| !key.starts_with(&format!("{id}:")));
+            rt.origins.lock().unwrap().remove(&id);
+            rt.skips
+                .lock()
+                .unwrap()
+                .retain(|key, _| !key.starts_with(&format!("{id}:")));
             rt.file_activity.lock().unwrap().remove(&id);
             rt.peer_status
                 .lock()
@@ -682,6 +708,29 @@ impl Realtime {
             Event::Announcement(Announcement::Changed { .. }) | Event::Neighbor(_) => {
                 rt.wake.notify_waiters();
             }
+            Event::SubscriptionClosed => {
+                rt.lost.lock().unwrap().insert(library.to_string());
+                rt.wake.notify_waiters();
+            }
+        }
+    }
+    fn mark_dirty(&self, library: &str) {
+        self.dirty.lock().unwrap().insert(library.to_string());
+        self.wake.notify_waiters();
+    }
+    /// 새 비교가 시작되면 앞서 끝난 비교의 상대만 빼고 알릴 수 없으므로 모두에게 알린다.
+    fn lease_started(&self, library: &str) {
+        if let Some(origin) = self.origins.lock().unwrap().get_mut(library) {
+            *origin = None;
+        }
+    }
+    /// 비교를 마친 상대는 이 서재의 변경을 모두 받았으므로, 그 사이의 변경을 다시 알리지 않는다.
+    fn synced(&self, library: &str, key: String) {
+        match self.origins.lock().unwrap().entry(library.to_string()) {
+            std::collections::hash_map::Entry::Occupied(mut entry) => *entry.get_mut() = None,
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                entry.insert(Some(key));
+            }
         }
     }
     async fn serve(self: Arc<Self>, closing: tokio_util::sync::CancellationToken) -> Result<()> {
@@ -696,6 +745,7 @@ impl Realtime {
                     match event {
                         Ok(event) if !event.kind.is_access() => {
                             let mut dirty = rt.dirty.lock().unwrap();
+                            let before = dirty.len();
                             for path in event.paths {
                                 if let Ok(rel) = path.strip_prefix(&base) {
                                     let parts: Vec<_> = rel.components().collect();
@@ -715,6 +765,11 @@ impl Realtime {
                                     }
                                 }
                             }
+                            let changed = dirty.len() != before;
+                            drop(dirty);
+                            if changed {
+                                rt.wake.notify_waiters();
+                            }
                         }
                         Err(_) => {
                             let ids: Vec<_> = rt.state.lock().unwrap()["libraries"]
@@ -724,6 +779,7 @@ impl Realtime {
                                 .filter_map(|v| v["id"].as_str().map(str::to_owned))
                                 .collect();
                             rt.dirty.lock().unwrap().extend(ids);
+                            rt.wake.notify_waiters();
                         }
                         _ => {}
                     }
@@ -745,14 +801,56 @@ impl Realtime {
         let mut subscriptions: HashMap<String, Subscription> = HashMap::new();
         let mut introduced: HashMap<String, Vec<String>> = HashMap::new();
         let mut announced: HashMap<String, u64> = HashMap::new();
+        let mut deferred: HashSet<String> = HashSet::new();
         loop {
-            let dirty = std::mem::take(&mut *self.dirty.lock().unwrap());
-            for id in dirty {
+            // 처리하는 동안 온 알림도 놓치지 않도록 대기를 먼저 등록한다.
+            let notified = self.wake.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if !deferred.is_empty() || !self.dirty.lock().unwrap().is_empty() {
+                // 한 번의 저장으로 이어지는 파일 이벤트를 모아 한 번만 알린다.
+                tokio::select! {_=closing.cancelled()=>break,_=tokio::time::sleep(Duration::from_millis(300))=>{}}
+            }
+            deferred.extend(std::mem::take(&mut *self.dirty.lock().unwrap()));
+            // 다른 기기와 파일을 주고받는 중인 서재는 비교가 끝난 뒤에 알린다.
+            let busy: HashMap<String, Instant> = self
+                .leases
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|(_, (_, until))| *until > Instant::now())
+                .map(|(id, (_, until))| (id.clone(), *until))
+                .collect();
+            let mut lease_end: Option<Instant> = None;
+            let mut bumped = false;
+            for id in std::mem::take(&mut deferred) {
+                if let Some(until) = busy.get(&id) {
+                    lease_end = Some(lease_end.map_or(*until, |end| end.min(*until)));
+                    deferred.insert(id);
+                    continue;
+                }
                 let rt = self.clone();
                 let name = id.clone();
                 let _ = tokio::task::spawn_blocking(move || rt.refresh_statistics(&name)).await;
-                *self.versions.lock().unwrap().entry(id).or_default() += 1;
+                let origin = self.origins.lock().unwrap().remove(&id).flatten();
+                let version = {
+                    let mut versions = self.versions.lock().unwrap();
+                    let version = versions.entry(id).or_default();
+                    *version += 1;
+                    *version
+                };
+                if let Some(origin) = origin {
+                    self.skips.lock().unwrap().insert(origin, version);
+                }
+                bumped = true;
             }
+            // 변경 없이 끝난 비교의 기록은 버려, 나중의 다른 변경에서 상대를 빼지 않게 한다.
+            self.origins
+                .lock()
+                .unwrap()
+                .retain(|id, _| busy.contains_key(id) || deferred.contains(id));
+            let lost = std::mem::take(&mut *self.lost.lock().unwrap());
+            let mut join_retry: Option<Instant> = None;
             // 서재별 그룹 주제에 참여해 구성원 목록과 변경 알림을 받는다.
             let groups: Vec<(String, Group)> = self.state.lock().unwrap()["libraries"]
                 .as_array()
@@ -761,9 +859,10 @@ impl Realtime {
                 .filter_map(|l| Some((l["id"].as_str()?.to_string(), group_of(l)?)))
                 .collect();
             subscriptions.retain(|id, subscription| {
-                groups
-                    .iter()
-                    .any(|(lib, g)| lib == id && g.id() == subscription.group)
+                !lost.contains(id)
+                    && groups
+                        .iter()
+                        .any(|(lib, g)| lib == id && g.id() == subscription.group)
                     && !subscription.finished()
             });
             introduced.retain(|id, _| subscriptions.contains_key(id));
@@ -783,7 +882,10 @@ impl Realtime {
                                 group.others(&own).map(|m| m.endpoint.clone()).collect(),
                             );
                         }
-                        Err(error) => tracing::warn!("그룹 알림 참여 실패: {error}"),
+                        Err(error) => {
+                            tracing::warn!("그룹 알림 참여 실패: {error}");
+                            join_retry = Some(Instant::now() + Duration::from_secs(30));
+                        }
                     }
                 }
                 let endpoints: Vec<String> =
@@ -830,8 +932,17 @@ impl Realtime {
                     }));
                 }
             }
-            tokio::select! {_=closing.cancelled()=>break,_=tokio::time::sleep(Duration::from_secs(5))=>{},_=self.wake.notified()=>{}}
-            self.wake.notify_waiters();
+            if bumped {
+                // 올린 버전을 연결별 작업이 바로 읽도록 깨운다.
+                self.wake.notify_waiters();
+            }
+            // 파일 변경·상대 알림·구성원 변경을 기다린다. 재시도할 일이 있을 때만 시각을 둔다.
+            let deadline = lease_end.into_iter().chain(join_retry).min();
+            tokio::select! {
+                _ = closing.cancelled() => break,
+                _ = &mut notified => {}
+                _ = until(deadline) => {}
+            }
         }
         drop(subscriptions);
         self.announcers.lock().unwrap().clear();
@@ -873,10 +984,16 @@ impl Realtime {
         let mut seen = None;
         let mut delay = 5;
         loop {
+            let notified = self.wake.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
             if closing.is_cancelled() || !self.targets().iter().any(|p| p["key"] == key) {
                 break;
             }
-            let version = *self.versions.lock().unwrap().get(&local).unwrap_or(&0);
+            let version = (
+                *self.versions.lock().unwrap().get(&local).unwrap_or(&0),
+                *self.requests.lock().unwrap().get(&key).unwrap_or(&0),
+            );
             if connection
                 .as_ref()
                 .is_some_and(|c| c.close_reason().is_some())
@@ -918,6 +1035,15 @@ impl Realtime {
                     connection = Some(conn);
                     seen = None;
                 }
+                if let Some((done, asked)) = seen {
+                    // 직전 버전이 이 상대에게서 받은 변경뿐이면 다시 비교하거나 알리지 않는다.
+                    if asked == version.1
+                        && done + 1 == version.0
+                        && self.skips.lock().unwrap().get(&key) == Some(&version.0)
+                    {
+                        seen = Some(version);
+                    }
+                }
                 if seen == Some(version) {
                     return Ok::<(), String>(());
                 }
@@ -939,6 +1065,7 @@ impl Realtime {
                             (owner.clone(), Instant::now() + Duration::from_secs(180)),
                         );
                     }
+                    self.lease_started(&local);
                     let guard = OutgoingLease {
                         peer: self.clone(),
                         library: local.clone(),
@@ -967,6 +1094,7 @@ impl Realtime {
                         },
                     )
                     .await?;
+                    self.synced(&local, key.clone());
                     drop(guard);
                     let time = std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
@@ -1000,7 +1128,7 @@ impl Realtime {
                 Ok(())
             };
             let outcome = tokio::select! {_=closing.cancelled()=>break,result=result=>result};
-            let wait = if let Err(error) = outcome {
+            if let Err(error) = outcome {
                 self.peer_status
                     .lock()
                     .unwrap()
@@ -1012,12 +1140,21 @@ impl Realtime {
                 seen = None;
                 let wait = delay;
                 delay = (delay * 2).min(60);
-                wait
+                tokio::select! {_=closing.cancelled()=>break,_=tokio::time::sleep(Duration::from_secs(wait))=>{},_=&mut notified=>{}}
             } else {
                 delay = 5;
-                5
-            };
-            tokio::select! {_=closing.cancelled()=>break,_=tokio::time::sleep(Duration::from_secs(wait))=>{},_=self.wake.notified()=>{}}
+                // 연결된 동안에는 새 변경 알림이나 연결 종료만 기다린다.
+                let closed = connection.clone();
+                let closed = async move {
+                    match closed {
+                        Some(connection) => {
+                            connection.closed().await;
+                        }
+                        None => std::future::pending().await,
+                    }
+                };
+                tokio::select! {_=closing.cancelled()=>break,_=&mut notified=>{},_=closed=>{}}
+            }
         }
         self.links.lock().unwrap().remove(&key);
         if let Some(connection) = connection {
@@ -1090,6 +1227,7 @@ impl Host for Realtime {
             .lock()
             .unwrap()
             .retain(|_, (owner, _)| owner != session);
+        self.wake.notify_waiters();
     }
     fn handle(&self, peer: &str, session: &str, message: Message) -> Result<Message> {
         let req = &message.meta;
@@ -1147,12 +1285,8 @@ impl Host for Realtime {
             return Ok(Message::json(json!(true)));
         }
         if op == "notify" {
-            *self
-                .versions
-                .lock()
-                .unwrap()
-                .entry(target.into())
-                .or_default() += 1;
+            let key = format!("{target}:{peer}:{}", req["vault"].as_str().unwrap_or(""));
+            *self.requests.lock().unwrap().entry(key).or_default() += 1;
             self.wake.notify_waiters();
             return Ok(Message::json(json!(true)));
         }
@@ -1166,6 +1300,7 @@ impl Host for Realtime {
                 target.into(),
                 (session.into(), Instant::now() + Duration::from_secs(180)),
             );
+            self.lease_started(target);
             return Ok(Message::json(json!(true)));
         }
         if !leases
@@ -1185,8 +1320,12 @@ impl Host for Realtime {
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap_or_default()
                     .as_secs());
+                let vault = req["vault"].as_str().unwrap_or("");
+                self.synced(target, format!("{target}:{peer}:{vault}"));
             }
             leases.remove(target);
+            // 받은 파일을 다른 구성원에게 알리도록 대기 중인 변경을 처리한다.
+            self.wake.notify_waiters();
             return Ok(Message::json(json!(true)));
         }
         if op == "touch" {
@@ -1224,7 +1363,7 @@ impl Host for Realtime {
                     },
                     req["expected"].as_str(),
                 )?;
-                self.dirty.lock().unwrap().insert(target.into());
+                self.mark_dirty(target);
                 Ok(Message::json(json!(true)))
             }
             _ => Err("지원하지 않는 실시간 요청입니다.".into()),
@@ -1246,6 +1385,8 @@ impl Drop for OutgoingLease {
         {
             leases.remove(&self.library);
         }
+        drop(leases);
+        self.peer.wake.notify_waiters();
     }
 }
 
