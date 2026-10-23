@@ -21,6 +21,17 @@ use std::{
 use uuid::Uuid;
 type Result<T> = std::result::Result<T, String>;
 
+const MAX_LIBRARY_LEASES: usize = 3;
+const SYNC_BUSY_MESSAGE: &str = "다른 동기화가 진행 중입니다.";
+
+fn retain_active_leases(leases: &mut HashMap<String, Vec<(String, Instant)>>) {
+    let now = Instant::now();
+    leases.retain(|_, list| {
+        list.retain(|(_, until)| *until > now);
+        !list.is_empty()
+    });
+}
+
 pub struct Realtime {
     store: Arc<Store>,
     base: PathBuf,
@@ -29,7 +40,7 @@ pub struct Realtime {
     node: Mutex<Option<Node>>,
     error: Mutex<String>,
     invites: Mutex<HashMap<String, (String, Instant)>>,
-    leases: Mutex<HashMap<String, (String, Instant)>>,
+    leases: Mutex<HashMap<String, Vec<(String, Instant)>>>,
     connections: Mutex<HashMap<String, (String, Connection)>>,
     // 서재별 연결. 그룹에서 나갈 때 구성원에게 직접 알리는 데 사용한다.
     links: Mutex<HashMap<String, (String, Connection)>>,
@@ -248,7 +259,7 @@ impl Realtime {
                 "status":statuses.get(&format!("{id}:{}:{}",peer.endpoint,peer.vault)),
                 "online":connections.values().any(|(endpoint,c)|*endpoint==peer.endpoint&&c.close_reason().is_none())})).collect();
             json!({"id":id,"name":library["name"],"path":self.base.join(id),"group":group.as_ref().map(|g|json!({"id":g.id(),"members":g.active().count()})),
-                "peers":peers,"syncing":leases.get(id).is_some_and(|(_,until)|*until>Instant::now()),"statistics":statistics.get(id)})
+                "peers":peers,"syncing":leases.get(id).is_some_and(|list|list.iter().any(|(_,until)|*until>Instant::now())),"statistics":statistics.get(id)})
         }).collect();
         let node = self.node.lock().unwrap();
         let relay = node
@@ -604,6 +615,9 @@ impl Realtime {
             if current.member(&own).is_none() {
                 current.update(&self.key, &own, &id, title, true, false);
             }
+            if current.full() {
+                return Err(group::FULL_MESSAGE.into());
+            }
             Ok(current.clone())
         })?;
         self.wake.notify_waiters();
@@ -728,8 +742,13 @@ impl Realtime {
         }
     }
     /// 비교를 마친 상대는 이 서재의 변경을 모두 받았으므로, 그 사이의 변경을 다시 알리지 않는다.
-    fn synced(&self, library: &str, key: String) {
-        match self.origins.lock().unwrap().entry(library.to_string()) {
+    fn synced(&self, library: &str, key: String, active_others: bool) {
+        let mut origins = self.origins.lock().unwrap();
+        if active_others {
+            origins.insert(library.to_string(), None);
+            return;
+        }
+        match origins.entry(library.to_string()) {
             std::collections::hash_map::Entry::Occupied(mut entry) => *entry.get_mut() = None,
             std::collections::hash_map::Entry::Vacant(entry) => {
                 entry.insert(Some(key));
@@ -816,14 +835,19 @@ impl Realtime {
             }
             deferred.extend(std::mem::take(&mut *self.dirty.lock().unwrap()));
             // 다른 기기와 파일을 주고받는 중인 서재는 비교가 끝난 뒤에 알린다.
-            let busy: HashMap<String, Instant> = self
-                .leases
-                .lock()
-                .unwrap()
-                .iter()
-                .filter(|(_, (_, until))| *until > Instant::now())
-                .map(|(id, (_, until))| (id.clone(), *until))
-                .collect();
+            let busy: HashMap<String, Instant> = {
+                let mut leases = self.leases.lock().unwrap();
+                retain_active_leases(&mut leases);
+                leases
+                    .iter()
+                    .filter_map(|(id, list)| {
+                        list.iter()
+                            .map(|(_, until)| *until)
+                            .max()
+                            .map(|until| (id.clone(), until))
+                    })
+                    .collect()
+            };
             let mut lease_end: Option<Instant> = None;
             let mut bumped = false;
             for id in std::mem::take(&mut deferred) {
@@ -1056,17 +1080,20 @@ impl Realtime {
                     if !self.targets().iter().any(|p| p["key"] == key) {
                         return Err("이 서재의 동기화 연결이 해제되었습니다.".into());
                     }
-                    let owner = format!("outgoing:{}", Uuid::new_v4());
+                    let owner = format!("outgoing:{key}");
                     {
                         let mut leases = self.leases.lock().unwrap();
-                        leases.retain(|_, (_, until)| *until > Instant::now());
-                        if leases.contains_key(&local) {
-                            return Err("다른 동기화가 진행 중입니다.".into());
+                        retain_active_leases(&mut leases);
+                        let list = leases.entry(local.clone()).or_default();
+                        if list.len() >= MAX_LIBRARY_LEASES
+                            || list.iter().any(|(id, _)| id == &owner)
+                        {
+                            if list.is_empty() {
+                                leases.remove(&local);
+                            }
+                            return Err(SYNC_BUSY_MESSAGE.into());
                         }
-                        leases.insert(
-                            local.clone(),
-                            (owner.clone(), Instant::now() + Duration::from_secs(180)),
-                        );
+                        list.push((owner.clone(), Instant::now() + Duration::from_secs(180)));
                     }
                     self.lease_started(&local);
                     let guard = OutgoingLease {
@@ -1091,14 +1118,20 @@ impl Realtime {
                             let mut leases = rt.leases.lock().unwrap();
                             let lease = leases
                                 .get_mut(&scope)
-                                .filter(|(id, _)| id == &owner)
+                                .and_then(|list| list.iter_mut().find(|(id, _)| id == &owner))
                                 .ok_or("동기화 세션이 변경되었습니다.")?;
                             lease.1 = Instant::now() + Duration::from_secs(180);
                             Ok(())
                         },
                     )
                     .await?;
-                    self.synced(&local, key.clone());
+                    let remaining = {
+                        let leases = self.leases.lock().unwrap();
+                        leases.get(&local).map_or(0, |list| {
+                            list.iter().filter(|(id, _)| id != &guard.owner).count()
+                        })
+                    };
+                    self.synced(&local, key.clone(), remaining > 0);
                     drop(guard);
                     let time = std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
@@ -1133,6 +1166,16 @@ impl Realtime {
             };
             let outcome = tokio::select! {_=closing.cancelled()=>break,result=result=>result};
             if let Err(error) = outcome {
+                if matches!(error.as_str(), SYNC_BUSY_MESSAGE | "다른 기기가 동기화 중입니다.")
+                    || error.contains("다시 비교합니다")
+                {
+                    self.peer_status
+                        .lock()
+                        .unwrap()
+                        .insert(key.clone(), json!({"phase":"pending"}));
+                    tokio::select! {_=closing.cancelled()=>break,_=tokio::time::sleep(Duration::from_secs(2))=>{},_=&mut notified=>{}}
+                    continue;
+                }
                 self.peer_status
                     .lock()
                     .unwrap()
@@ -1143,7 +1186,7 @@ impl Realtime {
                 self.links.lock().unwrap().remove(&key);
                 seen = None;
                 let wait = delay;
-                delay = (delay * 2).min(60);
+                delay = (delay * 2).min(300);
                 tokio::select! {_=closing.cancelled()=>break,_=tokio::time::sleep(Duration::from_secs(wait))=>{},_=&mut notified=>{}}
             } else {
                 delay = 5;
@@ -1200,6 +1243,9 @@ impl Realtime {
                 .as_mut()
                 .filter(|g| req["group"].as_str() == Some(g.id().as_str()))
                 .ok_or("코드를 만든 뒤 동기화 그룹이 변경되었습니다. 새 코드를 만들어 주세요.")?;
+            if current.member(peer).is_none() && current.full() {
+                return Err(group::FULL_MESSAGE.into());
+            }
             current.update(&self.key, peer, remote, &name, storage, false);
             Ok((current.clone(), library["name"].clone()))
         })?;
@@ -1227,10 +1273,10 @@ impl Host for Realtime {
     }
     fn disconnected(&self, session: &str) {
         self.connections.lock().unwrap().remove(session);
-        self.leases
-            .lock()
-            .unwrap()
-            .retain(|_, (owner, _)| owner != session);
+        self.leases.lock().unwrap().retain(|_, list| {
+            list.retain(|(owner, _)| owner != session);
+            !list.is_empty()
+        });
         self.wake.notify_waiters();
     }
     fn handle(&self, peer: &str, session: &str, message: Message) -> Result<Message> {
@@ -1295,26 +1341,39 @@ impl Host for Realtime {
             return Ok(Message::json(json!(true)));
         }
         let mut leases = self.leases.lock().unwrap();
-        leases.retain(|_, (_, until)| Instant::now() < *until);
+        retain_active_leases(&mut leases);
         if op == "begin" {
-            if leases.contains_key(target) {
-                return Err("다른 기기가 동기화 중입니다.".into());
+            let list = leases.entry(target.into()).or_default();
+            if list.len() >= MAX_LIBRARY_LEASES || list.iter().any(|(owner, _)| owner == session) {
+                if list.is_empty() {
+                    leases.remove(target);
+                }
+                return Err(SYNC_BUSY_MESSAGE.into());
             }
-            leases.insert(
-                target.into(),
-                (session.into(), Instant::now() + Duration::from_secs(180)),
-            );
+            list.push((session.into(), Instant::now() + Duration::from_secs(180)));
+            drop(leases);
             self.lease_started(target);
             return Ok(Message::json(json!(true)));
         }
-        if !leases
-            .get(target)
-            .is_some_and(|(owner, _)| owner == session)
-        {
+        let Some(lease) = leases
+            .get_mut(target)
+            .and_then(|list| list.iter_mut().find(|(owner, _)| owner == session))
+        else {
             return Err("동기화 세션을 다시 연결해 주세요.".into());
-        }
-        leases.get_mut(target).unwrap().1 = Instant::now() + Duration::from_secs(180);
+        };
+        lease.1 = Instant::now() + Duration::from_secs(180);
         if op == "end" {
+            let remaining = if let Some(list) = leases.get_mut(target) {
+                list.retain(|(owner, _)| owner != session);
+                let len = list.len();
+                if len == 0 {
+                    leases.remove(target);
+                }
+                len
+            } else {
+                0
+            };
+            drop(leases);
             if req["success"] != false {
                 self.statistics
                     .lock()
@@ -1325,13 +1384,13 @@ impl Host for Realtime {
                     .unwrap_or_default()
                     .as_secs());
                 let vault = req["vault"].as_str().unwrap_or("");
-                self.synced(target, format!("{target}:{peer}:{vault}"));
+                self.synced(target, format!("{target}:{peer}:{vault}"), remaining > 0);
             }
-            leases.remove(target);
             // 받은 파일을 다른 구성원에게 알리도록 대기 중인 변경을 처리한다.
             self.wake.notify_waiters();
             return Ok(Message::json(json!(true)));
         }
+        drop(leases);
         if op == "touch" {
             return Ok(Message::json(json!(true)));
         }
@@ -1385,11 +1444,11 @@ struct OutgoingLease {
 impl Drop for OutgoingLease {
     fn drop(&mut self) {
         let mut leases = self.peer.leases.lock().unwrap();
-        if leases
-            .get(&self.library)
-            .is_some_and(|(owner, _)| owner == &self.owner)
-        {
-            leases.remove(&self.library);
+        if let Some(list) = leases.get_mut(&self.library) {
+            list.retain(|(owner, _)| owner != &self.owner);
+            if list.is_empty() {
+                leases.remove(&self.library);
+            }
         }
         drop(leases);
         self.peer.wake.notify_waiters();
@@ -1457,7 +1516,7 @@ mod tests {
         );
         fixture.rt.leases.lock().unwrap().insert(
             id.clone(),
-            ("session".into(), Instant::now() + Duration::from_secs(60)),
+            vec![("session".into(), Instant::now() + Duration::from_secs(60))],
         );
         assert_eq!(
             crate::control::action(fixture.rt.clone(), "delete", json!({"id":id}))

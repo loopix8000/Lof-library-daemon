@@ -17,7 +17,12 @@ use sha2::{Digest, Sha256};
 pub const CODE_PREFIX: &str = "lof-group://";
 const LEGACY_PREFIX: &str = "lof-peer://";
 pub const MAX_ANNOUNCEMENT: usize = 65_536;
-pub const MAX_MEMBERS: usize = 32;
+/// 한 그룹에서 동시에 동기화할 수 있는 장치 수.
+pub const MAX_MEMBERS: usize = 10;
+pub const FULL_MESSAGE: &str =
+    "동기화 그룹에는 장치를 최대 10대까지 연결할 수 있습니다. 사용하지 않는 장치를 그룹에서 제거한 뒤 다시 시도해 주세요.";
+// 제거 기록까지 포함해 보관하는 구성원 기록 수.
+const MAX_RECORDS: usize = 128;
 pub const INVITE_SECONDS: u64 = 600;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -126,6 +131,10 @@ impl Group {
     pub fn member(&self, endpoint: &str) -> Option<&Member> {
         self.active().find(|member| member.endpoint == endpoint)
     }
+    /// 새 장치를 더 받을 수 없으면 true. 이미 구성원인 장치의 기록 갱신은 막지 않는다.
+    pub fn full(&self) -> bool {
+        self.active().count() >= MAX_MEMBERS
+    }
     /// 이 장치를 제외한 현재 구성원.
     pub fn others<'a>(&'a self, own: &'a str) -> impl Iterator<Item = &'a Member> {
         self.active().filter(move |member| member.endpoint != own)
@@ -177,7 +186,7 @@ impl Group {
         let mut changed = false;
         loop {
             let mut progressed = false;
-            for record in incoming.iter().take(MAX_MEMBERS * 4) {
+            for record in incoming.iter().take(MAX_RECORDS) {
                 if !well_formed(record) || !verify(&id, record) {
                     continue;
                 }
@@ -189,7 +198,12 @@ impl Group {
                     (record.version, record.removed, &record.sig)
                         > (current.version, current.removed, &current.sig)
                 });
-                if newer && (existing.is_some() || self.members.len() < MAX_MEMBERS) {
+                // 활성 장치가 늘어나는 기록은 상한 안에서만 받는다.
+                let adds = !record.removed && existing.is_none_or(|current| current.removed);
+                if newer
+                    && !(adds && self.full())
+                    && (existing.is_some() || self.members.len() < MAX_RECORDS)
+                {
                     self.replace(record.clone());
                     progressed = true;
                     changed = true;
