@@ -133,13 +133,34 @@ pub async fn synchronize(
     peer: &str,
     heartbeat: impl Fn() -> Result<()> + Send + Sync,
 ) -> Result<u64> {
+    synchronize_cached(
+        connection,
+        root,
+        local,
+        target,
+        peer,
+        &crate::inventory::Cache::default(),
+        heartbeat,
+    )
+    .await
+}
+
+pub async fn synchronize_cached(
+    connection: &Connection,
+    root: &Path,
+    local: &str,
+    target: &str,
+    peer: &str,
+    inventories: &crate::inventory::Cache,
+    heartbeat: impl Fn() -> Result<()> + Send + Sync,
+) -> Result<u64> {
     let remote = Remote {
         connection,
         local,
         target,
     };
     remote.call(json!({"op":"begin"}), vec![]).await?;
-    let result = compare(&remote, root, peer, &heartbeat).await;
+    let result = compare(&remote, root, peer, inventories, &heartbeat).await;
     let ended = remote
         .call(json!({"op":"end","success":result.is_ok()}), vec![])
         .await;
@@ -151,6 +172,7 @@ async fn compare(
     remote: &Remote<'_>,
     root: &Path,
     peer: &str,
+    inventories: &crate::inventory::Cache,
     heartbeat: &(impl Fn() -> Result<()> + Send + Sync),
 ) -> Result<u64> {
     let root = root.to_path_buf();
@@ -171,8 +193,9 @@ async fn compare(
         return Err("상대 서재가 변경되었습니다. 다시 연결해 주세요.".into());
     }
     let mut other: BTreeMap<String, Info> =
-        serde_json::from_value(remote.call(json!({"op":"inventory"}), vec![]).await?.meta)
-            .map_err(|_| "파일 목록 형식 오류")?;
+        serde_json::from_value(
+            inventories.fetch(remote.connection, remote.local, remote.target).await?,
+        ).map_err(|_| "파일 목록 형식 오류")?;
     other.remove(".lof-sync-id");
     let source = root.clone();
     let local: BTreeMap<String, Info> = serde_json::from_value(

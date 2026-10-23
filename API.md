@@ -28,6 +28,10 @@ ALPN: `lof/realtime-files/1`. QUIC의 인증된 공개키를 피어 ID로 사용
 - `notify`: 해당 서재의 변경 알림
 - `begin`: 서재별 동기화 임대 획득
 - `inventory`: 경로별 `{size,modified,etag}` 목록. ETag는 파일 SHA-256
+  - `hello`의 `capabilities`에 `inventory-delta-v1`을 알립니다.
+  - 요청에 `delta:true`와 이전 목록의 요약값 `known`을 보내면 `{format:"inventory-delta-v1",digest,base,changed,removed}`로 바뀐 항목과 삭제된 경로만 응답합니다.
+  - 첫 요청이나 기준 목록이 다르면 `{format:"inventory-delta-v1",digest,files}`로 전체 목록을 보냅니다. 요약값은 경로순 목록과 Writer의 `{size,modified,etag,unavailable}` 필드 순서로 직렬화한 JSON의 SHA-256입니다.
+  - 받은 목록의 요약값이 다르면 전체 목록을 한 번 다시 요청합니다. 이전 버전과는 기존 전체 목록 형식으로 통신합니다. 캐시는 메모리에만 보관하며 재시작 시 첫 목록은 전체를 받습니다.
 - `read`: `path` 원본 바이트
 - `write`: `path`, `expected`(이전 SHA-256 또는 null), 원본 바이트
 - `remove`: `path`, `expected` SHA-256

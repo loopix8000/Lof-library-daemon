@@ -6,6 +6,7 @@ use serde_json::{json, Value};
 use std::{sync::Arc, time::Duration};
 use tokio::sync::Semaphore;
 pub mod group;
+pub mod inventory;
 pub mod replica;
 pub mod storage;
 

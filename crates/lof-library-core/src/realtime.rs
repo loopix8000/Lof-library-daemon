@@ -7,7 +7,7 @@ use iroh::SecretKey;
 use iroh::Watcher as _;
 use lof_realtime::{
     group::{self, Announcement, Announcer, Event, Group, Member, Subscription},
-    storage, Connection, Host, Message, Node,
+    inventory, storage, Connection, Host, Message, Node,
 };
 use notify::Watcher;
 use rusqlite::OptionalExtension;
@@ -47,6 +47,7 @@ pub struct Realtime {
     lost: Mutex<HashSet<String>>,
     // 삭제는 파일 요청과 Library 간 비교가 끝난 뒤 독점 실행한다.
     file_activity: Mutex<HashMap<String, Arc<tokio::sync::RwLock<()>>>>,
+    inventories: inventory::Cache,
     wake: tokio::sync::Notify,
 }
 fn read_key(store: &Store, key: &str) -> Result<Option<String>> {
@@ -119,6 +120,7 @@ impl Realtime {
             skips: Mutex::new(HashMap::new()),
             lost: Mutex::new(HashSet::new()),
             file_activity: Mutex::new(file_activity),
+            inventories: inventory::Cache::default(),
             wake: tokio::sync::Notify::new(),
         });
         rt.save(&rt.state.lock().unwrap())?;
@@ -654,6 +656,7 @@ impl Realtime {
             *group = None;
             Ok(Some(members))
         })?;
+        self.inventories.forget_library(library);
         let Some(members) = members else {
             return Ok(());
         };
@@ -1015,7 +1018,7 @@ impl Realtime {
                     let reply = lof_realtime::request(
                         &conn,
                         Message::json(
-                            json!({"op":"hello","vault":local,"target":remote,"storage":true,"members":self.members(&local)}),
+                            json!({"op":"hello","vault":local,"target":remote,"storage":true,"capabilities":[inventory::FORMAT],"members":self.members(&local)}),
                         ),
                     )
                     .await?;
@@ -1077,12 +1080,13 @@ impl Realtime {
                         .insert(key.clone(), json!({"phase":"syncing"}));
                     let rt = self.clone();
                     let scope = local.clone();
-                    let conflicts = lof_realtime::replica::synchronize(
+                    let conflicts = lof_realtime::replica::synchronize_cached(
                         conn,
                         &self.base.join(&local),
                         &local,
                         &remote,
                         &key,
+                        &self.inventories,
                         move || {
                             let mut leases = rt.leases.lock().unwrap();
                             let lease = leases
@@ -1277,7 +1281,7 @@ impl Host for Realtime {
             }
             if op == "hello" {
                 return Ok(Message::json(
-                    json!({"storage":true,"members":group.map(|g|g.members).unwrap_or_default()}),
+                    json!({"storage":true,"capabilities":[inventory::FORMAT],"members":group.map(|g|g.members).unwrap_or_default()}),
                 ));
             }
         }
@@ -1335,7 +1339,9 @@ impl Host for Realtime {
         if op == "inventory" {
             let mut inventory = storage::inventory(&root)?;
             inventory[".lof-sync-id"] = json!({"size":36,"modified":null,"etag":null});
-            return Ok(Message::json(inventory));
+            return Ok(Message::json(self.inventories.reply(
+                peer, target, req["vault"].as_str().unwrap_or(""), req, inventory,
+            )?));
         }
         let path = req["path"].as_str().ok_or("파일 경로가 없습니다.")?;
         if op == "read" && path == ".lof-sync-id" {
