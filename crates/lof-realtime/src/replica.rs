@@ -8,6 +8,7 @@ use std::{
 };
 #[derive(Clone, Deserialize)]
 struct Info {
+    modified: Option<i64>,
     etag: Option<String>,
 }
 #[derive(Default, Deserialize, Serialize)]
@@ -367,6 +368,16 @@ async fn compare(
         let preserve = protected.iter().any(|prefix| path.starts_with(prefix));
         let take_remote = if preserve && (l.is_none() || r.is_none()) {
             r.is_some()
+        } else if l.is_some() && r.is_some() && pair.local_id == pair.remote_id
+            && pair.local_id.as_deref().is_some_and(|id| id.starts_with("document:")) {
+            let ours = local_read(&root, &path).await?.ok_or("파일이 변경되었습니다.")?;
+            let theirs = remote.read(&path).await?;
+            if Some(storage::hash(&ours)).as_deref() != l || Some(storage::hash(&theirs)).as_deref() != r {
+                return Err("원고 비교 중 파일이 변경되었습니다.".into());
+            }
+            let ours_at = crate::document_version::modified(&ours, local.get(&path).and_then(|info| info.modified));
+            let theirs_at = crate::document_version::modified(&theirs, other.get(&path).and_then(|info| info.modified));
+            (theirs_at, r) > (ours_at, l)
         } else if l == before.as_deref() {
             true
         } else if r == before.as_deref() {
