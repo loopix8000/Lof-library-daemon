@@ -185,6 +185,7 @@ impl Realtime {
         library: &str,
         edit: impl FnOnce(&mut Option<Group>, &Value) -> Result<T>,
     ) -> Result<T> {
+        let own = self.own();
         let mut state = self.state.lock().unwrap();
         let mut next = state.clone();
         let entry = next["libraries"]
@@ -200,6 +201,16 @@ impl Realtime {
             if group.as_ref().map(Group::id) != previous.as_ref().map(Group::id) {
                 entry["aliases"] = json!({});
             }
+            if let Some(me) = group.as_ref().and_then(|g| g.member(&own)) {
+                if previous
+                    .as_ref()
+                    .and_then(|g| g.member(&own))
+                    .map(|m| m.name.as_str())
+                    != Some(me.name.as_str())
+                {
+                    entry["name"] = json!(me.name);
+                }
+            }
             entry["group"] = json!(group);
             self.save(&next)?;
             *state = next;
@@ -207,6 +218,23 @@ impl Realtime {
         Ok(result)
     }
     fn announce(&self, library: &str, announcement: Announcement) {
+        if let Announcement::Members { ref members } = announcement {
+            for (key, (target, connection)) in self.links.lock().unwrap().iter() {
+                if !key.starts_with(&format!("{library}:")) {
+                    continue;
+                }
+                let meta =
+                    json!({"op":"members","vault":library,"target":target,"members":members});
+                let connection = connection.clone();
+                spawn(async move {
+                    let _ = tokio::time::timeout(
+                        Duration::from_secs(3),
+                        lof_realtime::request(&connection, Message::json(meta)),
+                    )
+                    .await;
+                });
+            }
+        }
         if let Some(sender) = self.announcers.lock().unwrap().get(library).cloned() {
             spawn(async move {
                 let _ = sender.announce(&announcement).await;
@@ -255,7 +283,7 @@ impl Realtime {
             let id=library["id"].as_str().unwrap_or("");
             let group=group_of(library);
             let peers:Vec<_>=group.iter().flat_map(|g|g.others(&own)).map(|peer|json!({"id":peer.endpoint,"remoteVault":peer.vault,
-                "name":library["aliases"][&peer.endpoint].as_str().unwrap_or(&peer.name),"storage":peer.storage,
+                "name":peer.name,"storage":peer.storage,
                 "status":statuses.get(&format!("{id}:{}:{}",peer.endpoint,peer.vault)),
                 "online":connections.values().any(|(endpoint,c)|*endpoint==peer.endpoint&&c.close_reason().is_none())})).collect();
             json!({"id":id,"name":library["name"],"path":self.base.join(id),"group":group.as_ref().map(|g|json!({"id":g.id(),"members":g.active().count()})),
@@ -430,27 +458,22 @@ impl Realtime {
         if name.is_empty() || name.chars().count() > 100 {
             return Err("기기 이름을 1~100자로 입력해 주세요.".into());
         }
-        let mut state = self.state.lock().unwrap();
-        let mut next = state.clone();
-        let library = next["libraries"]
-            .as_array_mut()
-            .ok_or("서재 설정 오류")?
-            .iter_mut()
-            .find(|l| l["id"].as_str() == Some(vault))
-            .ok_or("서재가 없습니다.")?;
-        if group_of(library)
-            .and_then(|g| g.member(id).cloned())
-            .is_none()
-        {
-            return Err("기기를 찾을 수 없습니다.".into());
-        }
-        // 기기 이름은 이 Library에서만 쓰는 별칭으로 저장한다.
-        if !library["aliases"].is_object() {
-            library["aliases"] = json!({});
-        }
-        library["aliases"][id] = json!(name);
-        self.save(&next)?;
-        *state = next;
+        // 구성원 이름을 새 버전으로 서명해 그룹의 다른 기기에도 함께 반영한다.
+        let members = self.edit_group(vault, |group, _| {
+            let current = group.as_mut().ok_or("동기화 그룹이 없습니다.")?;
+            let member = current.member(id).cloned().ok_or("기기를 찾을 수 없습니다.")?;
+            current.update(
+                &self.key,
+                &member.endpoint,
+                &member.vault,
+                name,
+                member.storage,
+                false,
+            );
+            Ok(current.members.clone())
+        })?;
+        self.announce(vault, Announcement::Members { members });
+        self.wake.notify_waiters();
         Ok(())
     }
     /// 다른 Writer 또는 Library의 페어링 코드로 서재를 그룹에 가입시킨다.
