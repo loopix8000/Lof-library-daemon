@@ -8,6 +8,7 @@ use std::{
 };
 
 pub const FORMAT: &str = "inventory-delta-v1";
+pub const INDEX_FORMAT: &str = crate::file_index::FORMAT;
 const MAX_CACHED_SCOPES: usize = 64;
 
 // Writer와 같은 필드 순서와 기본값으로 JSON을 직렬화한다.
@@ -18,6 +19,8 @@ struct Info {
     etag: Option<String>,
     #[serde(default)]
     unavailable: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    index: Option<crate::file_index::Version>,
 }
 type Files = BTreeMap<String, Info>;
 #[derive(Hash, PartialEq, Eq)]
@@ -67,10 +70,16 @@ impl Cache {
         req: &Value,
         files: Value,
     ) -> Result<Value> {
-        if req["delta"] != true {
-            return Ok(files);
+        let mut files: Files = serde_json::from_value(files).map_err(|e| e.to_string())?;
+        // 구형 앱에는 기존 필드만 보내 같은 목록 요약값을 계산하게 한다.
+        if req["index"] != true {
+            for info in files.values_mut() { info.index = None; }
         }
-        let current = Snapshot::new(serde_json::from_value(files).map_err(|e| e.to_string())?)?;
+        let format = if req["index"] == true { INDEX_FORMAT } else { FORMAT };
+        if req["delta"] != true {
+            return serde_json::to_value(files).map_err(|e| e.to_string());
+        }
+        let current = Snapshot::new(files)?;
         let scope = Scope {
             peer: peer.into(),
             local: local.into(),
@@ -89,9 +98,9 @@ impl Cache {
                     .keys()
                     .filter(|path| !current.files.contains_key(*path))
                     .collect();
-                json!({"format":FORMAT,"digest":current.digest,"base":previous.digest,"changed":changed,"removed":removed})
+                json!({"format":format,"digest":current.digest,"base":previous.digest,"changed":changed,"removed":removed})
             }
-            _ => json!({"format":FORMAT,"digest":current.digest,"files":current.files}),
+            _ => json!({"format":format,"digest":current.digest,"files":current.files}),
         };
         remember(&mut sent, scope, current);
         Ok(reply)
@@ -106,8 +115,8 @@ impl Cache {
         // 변경 목록을 복원할 수 없으면 전체 목록을 한 번 다시 요청한다.
         for _ in 0..2 {
             let known = cached.as_ref().map(|snapshot| snapshot.digest.as_str());
-            let mut reply = request(connection, Message::json(json!({"op":"inventory","vault":local,"target":target,"delta":true,"known":known}))).await?.meta;
-            if reply["format"].as_str() != Some(FORMAT) {
+            let mut reply = request(connection, Message::json(json!({"op":"inventory","vault":local,"target":target,"delta":true,"index":true,"known":known}))).await?.meta;
+            if !matches!(reply["format"].as_str(), Some(FORMAT | INDEX_FORMAT)) {
                 // 이전 피어는 추가 요청 필드를 무시하고 전체 목록을 반환한다.
                 return Ok(reply);
             }

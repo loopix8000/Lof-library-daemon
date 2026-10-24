@@ -10,6 +10,8 @@ use std::{
 struct Info {
     modified: Option<i64>,
     etag: Option<String>,
+    #[serde(default)]
+    index: Option<crate::file_index::Version>,
 }
 #[derive(Default, Deserialize, Serialize)]
 struct State {
@@ -233,7 +235,13 @@ async fn compare(
         let local_hash = local.get(path).and_then(|i| i.etag.clone());
         let remote_hash = other.get(path).and_then(|i| i.etag.clone());
         let has_id = path.ends_with("/project.json") || path.to_ascii_lowercase().ends_with(".md");
-        let local_id = if has_id && local_hash.is_some() {
+        let local_index = local.get(path).and_then(|info| info.index.as_ref())
+            .filter(|index| index.matches(local_hash.as_deref()));
+        let remote_index = other.get(path).and_then(|info| info.index.as_ref())
+            .filter(|index| index.matches(remote_hash.as_deref()));
+        let local_id = if let Some(index) = local_index {
+            index.identity.clone()
+        } else if has_id && local_hash.is_some() {
             let bytes = local_read(&root, path)
                 .await?
                 .ok_or("원본이 변경되었습니다.")?;
@@ -244,7 +252,9 @@ async fn compare(
         } else {
             None
         };
-        let remote_id = if has_id && remote_hash.is_some() {
+        let remote_id = if let Some(index) = remote_index {
+            index.identity.clone()
+        } else if has_id && remote_hash.is_some() {
             if remote_hash == local_hash {
                 local_id.clone()
             } else {

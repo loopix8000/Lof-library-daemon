@@ -7,7 +7,6 @@ use std::{
     fs,
     io::Read,
     path::{Path, PathBuf},
-    time::UNIX_EPOCH,
 };
 
 pub fn hash(bytes: &[u8]) -> String {
@@ -90,6 +89,7 @@ pub fn read(root: &Path, relative: &str) -> Result<Option<Vec<u8>>> {
 pub fn inventory(root: &Path) -> Result<Value> {
     fn walk(
         root: &Path,
+        index: &crate::file_index::Index,
         dir: &str,
         out: &mut BTreeMap<String, Value>,
         folded: &mut HashSet<String>,
@@ -119,20 +119,15 @@ pub fn inventory(root: &Path) -> Result<Value> {
             let full = path(root, &rel)?;
             let meta = fs::symlink_metadata(full).map_err(|e| e.to_string())?;
             if meta.is_dir() {
-                walk(root, &rel, out, folded)?;
+                walk(root, index, &rel, out, folded)?;
             } else if meta.is_file() {
                 if out.len() >= 40_000 || !folded.insert(rel.to_lowercase()) {
                     return Err("파일 개수 또는 대소문자 경로 충돌을 확인해 주세요.".into());
                 }
-                let bytes = read(root, &rel)?.ok_or("목록을 읽는 중 파일이 변경되었습니다.")?;
-                let modified = meta
-                    .modified()
-                    .ok()
-                    .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-                    .map(|t| t.as_secs());
+                let entry = index.inspect(root, &rel, |bytes| crate::file_index::header(&rel, bytes))?;
                 out.insert(
                     rel,
-                    json!({"size":bytes.len(),"modified":modified,"etag":hash(&bytes)}),
+                    json!({"size":entry.size,"modified":entry.modified,"etag":entry.index.version,"index":entry.index}),
                 );
             } else {
                 return Err("일반 파일만 공유할 수 있습니다.".into());
@@ -141,7 +136,9 @@ pub fn inventory(root: &Path) -> Result<Value> {
         Ok(())
     }
     let mut out = BTreeMap::new();
-    walk(root, "", &mut out, &mut HashSet::new())?;
+    let index = crate::file_index::Index::open(root)?;
+    walk(root, &index, "", &mut out, &mut HashSet::new())?;
+    index.retain(out.keys())?;
     Ok(json!(out))
 }
 pub fn atomic(target: &Path, bytes: &[u8]) -> Result<()> {
@@ -169,6 +166,8 @@ pub fn apply(
     if old.as_deref().map(hash).as_deref() != expected {
         return Err("파일이 변경되어 다시 비교합니다.".into());
     }
+    // 파일 교체 뒤 같은 수정 시각이 유지돼도 이전 색인을 재사용하지 않는다.
+    crate::file_index::Index::open(root)?.invalidate(relative)?;
     if let Some(bytes) = old.as_deref() {
         let history = root
             .join(".lof")

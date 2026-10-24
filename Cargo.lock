@@ -3191,6 +3191,7 @@ dependencies = [
  "iroh",
  "iroh-gossip",
  "n0-future",
+ "rusqlite",
  "serde",
  "serde_json",
  "serde_yaml",

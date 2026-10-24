@@ -28,10 +28,14 @@ ALPN: `lof/realtime-files/1`. QUIC의 인증된 공개키를 피어 ID로 사용
 - `notify`: 해당 서재의 변경 알림
 - `begin`: 서재별 동기화 임대 획득
 - `inventory`: 경로별 `{size,modified,etag}` 목록. ETag는 파일 SHA-256
-  - `hello`의 `capabilities`에 `inventory-delta-v1`을 알립니다.
+  - `hello`의 `capabilities`에 `inventory-delta-v1`과 `inventory-index-v1`을 알립니다.
   - 요청에 `delta:true`와 이전 목록의 요약값 `known`을 보내면 `{format:"inventory-delta-v1",digest,base,changed,removed}`로 바뀐 항목과 삭제된 경로만 응답합니다.
   - 첫 요청이나 기준 목록이 다르면 `{format:"inventory-delta-v1",digest,files}`로 전체 목록을 보냅니다. 요약값은 경로순 목록과 Writer의 `{size,modified,etag,unavailable}` 필드 순서로 직렬화한 JSON의 SHA-256입니다.
   - 받은 목록의 요약값이 다르면 전체 목록을 한 번 다시 요청합니다. 이전 버전과는 기존 전체 목록 형식으로 통신합니다. 캐시는 메모리에만 보관하며 재시작 시 첫 목록은 전체를 받습니다.
+  - `index:true` 요청에는 항목별 `index:{version,identity}`를 포함합니다. `version`은 ETag와 같은 원본 SHA-256이며, `identity`는 `document:문서ID`, `project:작품ID` 또는 null입니다. 같은 원본을 받은 기기는 같은 버전을 유지합니다.
+  - `delta:true,index:true`의 응답 형식은 `inventory-index-v1`입니다. 요약값은 기존 필드 뒤에 `index`를 포함해 계산합니다. `index`를 요청하지 않은 구형 피어에는 추가 필드를 보내지 않습니다.
+  - 새 피어는 구형 피어의 `inventory-delta-v1`과 전체 목록 응답도 처리합니다. 색인 정보가 없거나 버전이 ETag와 맞지 않는 항목만 기존 원본 읽기·해시 비교를 사용합니다.
+  - 문서 헤더·내용 해시·정밀한 파일 상태는 각 서재의 `.lof/sync-index.sqlite`에 보관합니다. 파일 상태나 변경 알림이 달라진 항목만 다시 읽고, 실제 쓰기·삭제 직전에는 기존 원본 해시를 다시 검증합니다. 관리 색인은 동기화하지 않습니다.
 - `read`: `path` 원본 바이트
 - `write`: `path`, `expected`(이전 SHA-256 또는 null), 원본 바이트
 - `remove`: `path`, `expected` SHA-256

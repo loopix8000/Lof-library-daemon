@@ -782,6 +782,7 @@ impl Realtime {
                                         if Uuid::parse_str(&id).is_ok()
                                             && (rest.is_empty() || storage::allowed(&rest))
                                         {
+                                            lof_realtime::file_index::changed(&base.join(id.as_ref()), &rest);
                                             dirty.insert(id.into_owned());
                                         }
                                     }
@@ -800,6 +801,7 @@ impl Realtime {
                                 .flatten()
                                 .filter_map(|v| v["id"].as_str().map(str::to_owned))
                                 .collect();
+                            for id in &ids { lof_realtime::file_index::changed(&base.join(id), ""); }
                             rt.dirty.lock().unwrap().extend(ids);
                             rt.wake.notify_waiters();
                         }
@@ -1042,7 +1044,7 @@ impl Realtime {
                     let reply = lof_realtime::request(
                         &conn,
                         Message::json(
-                            json!({"op":"hello","vault":local,"target":remote,"storage":true,"capabilities":[inventory::FORMAT],"members":self.members(&local)}),
+                            json!({"op":"hello","vault":local,"target":remote,"storage":true,"capabilities":[inventory::FORMAT, inventory::INDEX_FORMAT],"members":self.members(&local)}),
                         ),
                     )
                     .await?;
@@ -1327,7 +1329,7 @@ impl Host for Realtime {
             }
             if op == "hello" {
                 return Ok(Message::json(
-                    json!({"storage":true,"capabilities":[inventory::FORMAT],"members":group.map(|g|g.members).unwrap_or_default()}),
+                    json!({"storage":true,"capabilities":[inventory::FORMAT, inventory::INDEX_FORMAT],"members":group.map(|g|g.members).unwrap_or_default()}),
                 ));
             }
         }
